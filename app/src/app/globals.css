@@ -1,0 +1,63 @@
+@tailwind base;
+@tailwind components;
+@tailwind utilities;
+
+@layer base {
+  :root {
+    /* shadcn CSS variables mapped to KAIA palette */
+    --background:   220 28% 7%;
+    --foreground:   220 30% 93%;
+    --card:         222 32% 11%;
+    --card-foreground: 220 30% 93%;
+    --popover:      222 32% 11%;
+    --popover-foreground: 220 30% 93%;
+    --primary:      168 100% 41%;
+    --primary-foreground: 220 28% 7%;
+    --secondary:    220 24% 16%;
+    --secondary-foreground: 220 30% 93%;
+    --muted:        220 24% 16%;
+    --muted-foreground: 220 15% 55%;
+    --accent:       220 24% 16%;
+    --accent-foreground: 220 30% 93%;
+    --destructive:  0 72% 51%;
+    --destructive-foreground: 0 0% 98%;
+    --border:       220 26% 18%;
+    --input:        220 26% 18%;
+    --ring:         168 100% 41%;
+    --radius:       0.75rem;
+  }
+}
+
+@layer base {
+  * {
+    @apply border-border;
+  }
+
+  body {
+    @apply bg-kaia-bg text-kaia-text;
+    font-feature-settings: "rlig" 1, "calt" 1;
+    -webkit-font-smoothing: antialiased;
+  }
+
+  /* Scrollbar */
+  ::-webkit-scrollbar       { width: 6px; height: 6px; }
+  ::-webkit-scrollbar-track { background: #07090F; }
+  ::-webkit-scrollbar-thumb { background: #1E2A40; border-radius: 3px; }
+  ::-webkit-scrollbar-thumb:hover { background: #00D2AA; }
+}
+
+@layer utilities {
+  /* KAIA glow on focus-within */
+  .kaia-glow {
+    box-shadow: 0 0 0 1px rgba(0, 210, 170, 0.4),
+                0 0 16px 0 rgba(0, 210, 170, 0.1);
+  }
+
+  /* Number input: hide spin arrows */
+  input[type="number"]::-webkit-outer-spin-button,
+  input[type="number"]::-webkit-inner-spin-button {
+    -webkit-appearance: none;
+    margin: 0;
+  }
+  input[type="number"] { -moz-appearance: textfield; }
+}

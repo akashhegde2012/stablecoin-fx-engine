@@ -5,8 +5,6 @@ import "./StablecoinToken.sol";
 
 /// @title USDTToken
 /// @notice ERC-20 mock USDT token (18 decimals, pegged 1:1 to USD).
-///         Real USDT uses 6 decimals; we use 18 here for uniform arithmetic
-///         across all pool tokens.
 contract USDTToken is StablecoinToken {
     constructor(address owner_)
         StablecoinToken("Tether USD", "USDT", 18, owner_)

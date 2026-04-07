@@ -16,5 +16,17 @@
       "name": "v5.5.0",
       "rev": "fcbae5394ae8ad52d8e580a3477db99814b9d565"
     }
+  },
+  "lib/orakl": {
+    "tag": {
+      "name": "1.0.0",
+      "rev": "7b6029b50b8160db6ac880e3f3b42ab4a9f92078"
+    }
+  },
+  "lib/pyth-sdk-solidity": {
+    "tag": {
+      "name": "v2.2.0",
+      "rev": "11d6bcfc2e56885535a9a8e3c8417847cb20be14"
+    }
   }
 }

@@ -8,23 +8,22 @@ import "@openzeppelin/contracts/access/Ownable.sol";
 
 import "./interfaces/IFXPool.sol";
 
-/// @title FXEngine
-/// @notice Stateless swap router for the single-sided FX liquidity pools.
-///
-///  ┌──────────────────────────────────────────────────────────────────┐
-///  │  Swap flow                                                       │
-///  │                                                                  │
-///  │  1. User approves FXEngine to spend tokenIn.                    │
-///  │  2. User calls swap(tokenIn, tokenOut, amountIn, minOut, to).   │
-///  │  3. FXEngine fetches USD prices from each pool's Chainlink feed. │
-///  │  4. grossOut = amountIn * priceIn / priceOut                    │
-///  │     (both prices share the same 8-decimal Chainlink format,     │
-///  │      so the denominator cancels and precision is maintained).   │
-///  │  5. fee = grossOut * outPool.feeRate() / 10_000                 │
-///  │     Fee stays inside outPool, rewarding its LPs.               │
-///  │  6. netOut = grossOut − fee  (≥ minAmountOut or revert)         │
-///  │  7. amountIn sent to inPool; netOut released from outPool.      │
-///  └──────────────────────────────────────────────────────────────────┘
+/**@title FXEngine
+ @notice Stateless swap router for the single-sided FX liquidity pools.
+
+    Swap flow                                                       
+                                                                    
+    1. User approves FXEngine to spend tokenIn.                    
+    2. User calls swap(tokenIn, tokenOut, amountIn, minOut, to).   
+    3. FXEngine fetches USD prices from each pool's Chainlink feed. 
+    4. grossOut = amountIn * priceIn / priceOut                    
+       (both prices share the same 8-decimal Chainlink format,     
+        so the denominator cancels and precision is maintained).   
+    5. fee = grossOut * outPool.feeRate() / 10_000                 
+       Fee stays inside outPool, rewarding its LPs.               
+    6. netOut = grossOut − fee  (≥ minAmountOut or revert)         
+    7. amountIn sent to inPool; netOut released from outPool.      
+*/
 contract FXEngine is ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
@@ -40,7 +39,7 @@ contract FXEngine is ReentrancyGuard, Ownable {
     /// @notice Maps a stablecoin token address to its FXPool.
     mapping(address => IFXPool) public pools;
 
-    /// @notice Ordered list of registered token addresses (for off-chain enumeration).
+    /// @notice Ordered list of registered token addresses for enumeration.
     address[] public registeredTokens;
 
     // -------------------------------------------------------------------------
@@ -57,14 +56,10 @@ contract FXEngine is ReentrancyGuard, Ownable {
         address to
     );
 
-    // -------------------------------------------------------------------------
     // Constructor
-    // -------------------------------------------------------------------------
     constructor(address owner_) Ownable(owner_) {}
 
-    // -------------------------------------------------------------------------
     // Admin
-    // -------------------------------------------------------------------------
 
     /// @notice Register a pool for a token. Overwrites any existing pool.
     /// @dev    Also authorises this engine inside the pool via FXPool.setFXEngine().
@@ -100,13 +95,15 @@ contract FXEngine is ReentrancyGuard, Ownable {
     // Core swap
     // -------------------------------------------------------------------------
 
-    /// @notice Swap `amountIn` of `tokenIn` for at least `minAmountOut` of `tokenOut`.
-    /// @param tokenIn       ERC-20 token being sold.
-    /// @param tokenOut      ERC-20 token being bought.
-    /// @param amountIn      Amount of tokenIn (18 dec).
-    /// @param minAmountOut  Minimum acceptable output (slippage protection).
-    /// @param to            Recipient of tokenOut.
-    /// @return amountOut    Actual tokenOut received.
+    /**
+    @notice Swap `amountIn` of `tokenIn` for at least `minAmountOut` of `tokenOut`.
+    @param tokenIn       ERC-20 token being sold.
+    @param tokenOut      ERC-20 token being bought.
+    @param amountIn      Amount of tokenIn (18 dec).
+    @param minAmountOut  Minimum acceptable output (slippage protection).
+    @param to            Recipient of tokenOut.
+    @return amountOut    Actual tokenOut received.
+    */
     function swap(
         address tokenIn,
         address tokenOut,
@@ -123,12 +120,12 @@ contract FXEngine is ReentrancyGuard, Ownable {
         require(address(poolIn) != address(0), "FXEngine: no pool for tokenIn");
         require(address(poolOut) != address(0), "FXEngine: no pool for tokenOut");
 
-        // ── Compute output amount ─────────────────────────────────────────────
+        // ── Compute output amount 
         amountOut = _computeAmountOut(amountIn, poolIn, poolOut);
         require(amountOut >= minAmountOut, "FXEngine: slippage exceeded");
         require(amountOut <= poolOut.getPoolBalance(), "FXEngine: insufficient output liquidity");
 
-        // ── Execute ───────────────────────────────────────────────────────────
+        // ── Execute 
         // 1. Pull tokenIn from the user into inPool
         IERC20(tokenIn).safeTransferFrom(msg.sender, address(poolIn), amountIn);
 
@@ -142,11 +139,13 @@ contract FXEngine is ReentrancyGuard, Ownable {
     // Views
     // -------------------------------------------------------------------------
 
-    /// @notice Return a price quote without executing the swap.
-    /// @param tokenIn   ERC-20 token being sold.
-    /// @param tokenOut  ERC-20 token being bought.
-    /// @param amountIn  Amount of tokenIn (18 dec).
-    /// @return amountOut Expected output after fees.
+    /**
+    @notice Return a price quote without executing the swap.
+    @param tokenIn   ERC-20 token being sold.
+    @param tokenOut  ERC-20 token being bought.
+    @param amountIn  Amount of tokenIn (18 dec).
+    @return amountOut Expected output after fees.
+    */
     function getQuote(address tokenIn, address tokenOut, uint256 amountIn)
         external
         view
@@ -191,20 +190,22 @@ contract FXEngine is ReentrancyGuard, Ownable {
     // Internal helpers
     // -------------------------------------------------------------------------
 
-    /// @dev Core price calculation:
-    ///      grossOut = amountIn × priceIn / priceOut
-    ///
-    ///      Both Chainlink feeds return prices with the same number of decimals
-    ///      (8 for USD feeds), so the 10^decimals factor cancels perfectly:
-    ///
-    ///      grossOut [18 dec] = amountIn [18 dec]
-    ///                        × priceIn  [8 dec]
-    ///                        / priceOut [8 dec]
-    ///
-    ///      When feeds have different decimals (unusual) we normalise first.
-    ///
-    ///      The fee is then deducted from grossOut and left inside the outPool,
-    ///      rewarding its liquidity providers.
+    /**
+        @dev Core price calculation:
+          grossOut = amountIn × priceIn / priceOut
+    
+          Both Chainlink feeds return prices with the same number of decimals
+          (8 for USD feeds), so the 10^decimals factor cancels perfectly:
+    
+          grossOut [18 dec] = amountIn [18 dec]
+                            × priceIn  [8 dec]
+                            / priceOut [8 dec]
+    
+          When feeds have different decimals (unusual) we normalise first.
+    
+          The fee is then deducted from grossOut and left inside the outPool,
+          rewarding its liquidity providers.
+    */
     function _computeAmountOut(uint256 amountIn, IFXPool poolIn, IFXPool poolOut)
         internal
         view

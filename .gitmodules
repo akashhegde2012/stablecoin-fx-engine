@@ -7,3 +7,9 @@
 [submodule "lib/chainlink-brownie-contracts"]
 	path = lib/chainlink-brownie-contracts
 	url = https://github.com/smartcontractkit/chainlink-brownie-contracts
+[submodule "lib/orakl"]
+	path = lib/orakl
+	url = https://github.com/Bisonai/orakl
+[submodule "lib/pyth-sdk-solidity"]
+	path = lib/pyth-sdk-solidity
+	url = https://github.com/pyth-network/pyth-sdk-solidity

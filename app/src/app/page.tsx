@@ -22,11 +22,11 @@ export default function HomePage() {
       <div className="mb-10 text-center space-y-2">
         <h1 className="text-4xl font-extrabold tracking-tight text-kaia-text">
           Stable Coins for{" "}
-          <span className="text-kaia-primary">FX Exchange</span>
+          <span className="text-kaia-primary">Foreign Exchange</span>
         </h1>
         <p className="text-kaia-muted max-w-xl mx-auto text-sm">
           Swap MYR, SGD, IDRX and USDT with deep on-chain liquidity,
-          Chainlink price feeds and instant settlement.
+          Trusted price feeds and instant settlement.
         </p>
       </div>
 

@@ -4,13 +4,14 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
-/// @title LPToken
-/// @notice ERC-20 token representing a liquidity provider's share in an FXPool.
-///         Minted on deposit and burned on withdrawal.  The owner is always the
-///         associated FXPool; no other address can mint or burn.
-///
-///         Naming convention:  "Wrapped MYR" / symbol "wMYR" for the MYR pool,
-///         "Wrapped SGD" / "wSGD" for the SGD pool, etc.
+/** @title LPToken
+    @notice ERC-20 token representing a liquidity provider's share in an FXPool.
+         Minted on deposit and burned on withdrawal.  The owner is always the
+         associated FXPool; no other address can mint or burn.
+
+         Naming convention:  "Wrapped MYR" / symbol "wMYR" for the MYR pool,
+         "Wrapped SGD" / "wSGD" for the SGD pool, etc.
+    */
 contract LPToken is ERC20, Ownable {
     constructor(string memory name_, string memory symbol_, address pool_)
         ERC20(name_, symbol_)

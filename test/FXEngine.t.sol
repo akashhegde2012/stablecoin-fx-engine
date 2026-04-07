@@ -4,7 +4,7 @@ pragma solidity ^0.8.20;
 import "forge-std/Test.sol";
 import "forge-std/console.sol";
 
-import "@chainlink/contracts/tests/MockV3Aggregator.sol";
+import "./mocks/MockOraklFeed.sol";
 
 import "../src/tokens/MYRToken.sol";
 import "../src/tokens/SGDToken.sol";
@@ -17,8 +17,10 @@ import "../src/FXEngine.sol";
 
 /// @title FXEngineTest
 /// @notice Full integration test suite for the FX engine.
+///         Uses MockV3Aggregator which implements the same latestRoundData/decimals
+///         ABI as Orakl Network's IAggregator.
 contract FXEngineTest is Test {
-    // ── Price feed constants (8 decimals) ─────────────────────────────────────
+    // ── Price feed constants (8 decimals, USD) ────────────────────────────────
     int256 constant MYR_USD  = 22_680_000;    // $0.2268
     int256 constant SGD_USD  = 74_190_000;    // $0.7419
     int256 constant IDRX_USD =      6_170;    // $0.0000617
@@ -37,11 +39,11 @@ contract FXEngineTest is Test {
     IDRXToken idrx;
     USDTToken usdt;
 
-    // ── Feeds ──────────────────────────────────────────────────────────────────
-    MockV3Aggregator myrFeed;
-    MockV3Aggregator sgdFeed;
-    MockV3Aggregator idrxFeed;
-    MockV3Aggregator usdtFeed;
+    // ── Mock feeds (Orakl v0.2 interface) ────────────────────────────────────
+    MockOraklFeed myrFeed;
+    MockOraklFeed sgdFeed;
+    MockOraklFeed idrxFeed;
+    MockOraklFeed usdtFeed;
 
     // ── Pools & engine ─────────────────────────────────────────────────────────
     FXPool   myrPool;
@@ -66,11 +68,11 @@ contract FXEngineTest is Test {
         idrx = new IDRXToken(owner);
         usdt = new USDTToken(owner);
 
-        // Mock feeds
-        myrFeed  = new MockV3Aggregator(8, MYR_USD);
-        sgdFeed  = new MockV3Aggregator(8, SGD_USD);
-        idrxFeed = new MockV3Aggregator(8, IDRX_USD);
-        usdtFeed = new MockV3Aggregator(8, USDT_USD);
+        // Mock feeds (Orakl v0.2: 3-value latestRoundData)
+        myrFeed  = new MockOraklFeed(8, MYR_USD);
+        sgdFeed  = new MockOraklFeed(8, SGD_USD);
+        idrxFeed = new MockOraklFeed(8, IDRX_USD);
+        usdtFeed = new MockOraklFeed(8, USDT_USD);
 
         // Pools
         myrPool  = new FXPool(address(myr),  address(myrFeed),  "Wrapped MYR",  "wMYR",  FEE_RATE, owner);
@@ -168,7 +170,6 @@ contract FXEngineTest is Test {
         uint256 amountIn = 100 ether;
         uint256 quote = engine.getQuote(address(myr), address(sgd), amountIn);
 
-        // grossOut (no fee) = 100e18 * 22_680_000 / 74_190_000
         uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
         uint256 fee      = (grossOut * FEE_RATE) / 10_000;
         uint256 expected = grossOut - fee;
@@ -180,7 +181,7 @@ contract FXEngineTest is Test {
     }
 
     /// @dev  100 USDT → IDRX
-    ///       100 USD / $0.0000617 per IDRX ≈ 1_620_745 IDRX (not billion — IDRX is 1:1 IDR)
+    ///       100 USD / $0.0000617 per IDRX ≈ 1_620_745 IDRX
     function test_GetQuote_USDTtoIDRX() public view {
         uint256 amountIn = 100 ether;
         uint256 quote = engine.getQuote(address(usdt), address(idrx), amountIn);
@@ -190,17 +191,16 @@ contract FXEngineTest is Test {
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
-        // Sanity: 100 USDT ≈ 1_600_000 – 1_700_000 IDRX (1 USD ≈ 16_207 IDR)
+        // Sanity: 100 USDT ≈ 1_600_000 – 1_700_000 IDRX
         assertGt(quote, 1_600_000 ether);
         assertLt(quote, 1_700_000 ether);
     }
 
-    /// @dev  1 000 000 IDRX → USDT (reverse direction)
     function test_GetQuote_IDRXtoUSDT() public view {
-        uint256 amountIn = 1_000_000 ether; // 1_000_000 IDRX = 1_000_000 IDR ≈ $61.7
+        uint256 amountIn = 1_000_000 ether;
         uint256 quote = engine.getQuote(address(idrx), address(usdt), amountIn);
 
-        // 1_000_000 IDR × $0.0000617 = ~$61.7 USDT (before fee ≈ 0.3 %)
+        // 1_000_000 IDR × $0.0000617 ≈ $61.7 USDT
         assertGt(quote, 60 ether);
         assertLt(quote, 63 ether);
     }
@@ -210,7 +210,7 @@ contract FXEngineTest is Test {
     // =========================================================================
 
     function test_Swap_MYRtoSGD() public {
-        uint256 amountIn = 1_000 ether; // 1 000 MYR
+        uint256 amountIn = 1_000 ether;
 
         uint256 expectedOut = engine.getQuote(address(myr), address(sgd), amountIn);
 
@@ -226,14 +226,12 @@ contract FXEngineTest is Test {
         assertEq(myr.balanceOf(bob), myrBefore - amountIn);
         assertEq(sgd.balanceOf(bob), sgdBefore + actualOut);
 
-        // inPool received all amountIn
         assertEq(myrPool.getPoolBalance(), MYR_SEED + amountIn);
-        // outPool decreased by netOut (fee stays)
         assertEq(sgdPool.getPoolBalance(), SGD_SEED - actualOut);
     }
 
     function test_Swap_SGDtoMYR() public {
-        uint256 amountIn = 305 ether; // 305 SGD
+        uint256 amountIn = 305 ether;
 
         vm.startPrank(bob);
         sgd.approve(address(engine), amountIn);
@@ -246,20 +244,20 @@ contract FXEngineTest is Test {
     }
 
     function test_Swap_USDTtoIDRX() public {
-        uint256 amountIn = 10 ether; // 10 USDT
+        uint256 amountIn = 10 ether;
 
         vm.startPrank(bob);
         usdt.approve(address(engine), amountIn);
         uint256 out = engine.swap(address(usdt), address(idrx), amountIn, 0, bob);
         vm.stopPrank();
 
-        // 10 USDT → ~162_000 IDRX (10 × 16_207 IDR/USD)
+        // 10 USDT → ~162_000 IDRX
         assertGt(out, 160_000 ether);
         assertLt(out, 170_000 ether);
     }
 
     function test_Swap_USDTtoSGD() public {
-        uint256 amountIn = 1_000 ether; // 1 000 USDT
+        uint256 amountIn = 1_000 ether;
 
         vm.startPrank(bob);
         usdt.approve(address(engine), amountIn);
@@ -274,7 +272,7 @@ contract FXEngineTest is Test {
     // ── Slippage guard ────────────────────────────────────────────────────────
     function test_Swap_RevertOnSlippage() public {
         uint256 amountIn = 100 ether;
-        uint256 tooHighMin = 999_999 ether; // deliberately unreachable
+        uint256 tooHighMin = 999_999 ether;
 
         vm.startPrank(bob);
         myr.approve(address(engine), amountIn);
@@ -285,7 +283,6 @@ contract FXEngineTest is Test {
 
     // ── Insufficient liquidity ────────────────────────────────────────────────
     function test_Swap_RevertOnInsufficientLiquidity() public {
-        // Request more SGD than is in the pool
         uint256 hugeAmount = 100_000_000 ether;
 
         vm.prank(owner);
@@ -308,22 +305,18 @@ contract FXEngineTest is Test {
         vm.prank(owner);
         myr.mint(lp2, 500_000 ether);
 
-        // lp2 deposits 500 000 MYR when pool already has 1 000 000 MYR
         vm.startPrank(lp2);
         myr.approve(address(myrPool), 500_000 ether);
         uint256 lpMinted = myrPool.deposit(500_000 ether);
         vm.stopPrank();
 
-        // lp2 should get 50% of existing LP supply (500k / 1000k × 1M wMYR)
         LPToken wMYR = LPToken(myrPool.lpToken());
         assertEq(lpMinted, 500_000 ether);
         assertEq(wMYR.balanceOf(lp2), 500_000 ether);
 
-        // Pool now has 1 500 000 MYR, total LP = 1 500 000 wMYR
         assertEq(myrPool.getPoolBalance(), 1_500_000 ether);
         assertEq(wMYR.totalSupply(),       1_500_000 ether);
 
-        // lp2 withdraws all
         vm.startPrank(lp2);
         uint256 returned = myrPool.withdraw(lpMinted);
         vm.stopPrank();
@@ -332,16 +325,13 @@ contract FXEngineTest is Test {
         assertEq(myr.balanceOf(lp2), 500_000 ether);
     }
 
-    /// @dev LPs earn fees: after a swap the LP token is worth more underlying.
     function test_LP_FeeAccruesToOutPool() public {
-        // Record wSGD LP token rate before any swap
         FXPool sgdP = sgdPool;
         LPToken wSGD = LPToken(sgdP.lpToken());
 
         uint256 supplyBefore  = wSGD.totalSupply();
         uint256 balanceBefore = sgdP.getPoolBalance();
 
-        // Bob swaps 1 000 MYR → SGD (outPool = sgdPool)
         uint256 amountIn = 1_000 ether;
         vm.prank(owner);
         myr.mint(bob, amountIn);
@@ -354,23 +344,14 @@ contract FXEngineTest is Test {
         uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
         uint256 fee      = (grossOut * FEE_RATE) / 10_000;
 
-        // sgdPool balance decreased by netOut; fee (grossOut - netOut) stayed in
         uint256 balanceAfter = sgdP.getPoolBalance();
         assertEq(balanceAfter, balanceBefore - netOut);
-
-        // LP supply unchanged
         assertEq(wSGD.totalSupply(), supplyBefore);
 
-        // LP token rate (balance / supply) increased slightly because fee stayed
         uint256 rateBefore = (balanceBefore * 1e18) / supplyBefore;
         uint256 rateAfter  = (balanceAfter  * 1e18) / wSGD.totalSupply();
 
-        // Rate should have *decreased* because pool lost tokens (net outflow)
-        // BUT the fee portion stayed, so the rate is higher than if there were no fee
-        // To verify: rateAfter > rateBefore - grossOut/supply * 1e18
-        assertLt(rateAfter, rateBefore); // pool did lose net tokens
-
-        // The fee amount that stayed:
+        assertLt(rateAfter, rateBefore);
         assertEq(balanceBefore - balanceAfter, netOut);
         assertEq(grossOut - netOut, fee);
         assertGt(fee, 0);
@@ -386,7 +367,7 @@ contract FXEngineTest is Test {
 
     function test_SetFeeRate() public {
         vm.prank(owner);
-        myrPool.setFeeRate(50); // 0.50 %
+        myrPool.setFeeRate(50);
         assertEq(myrPool.feeRate(), 50);
     }
 

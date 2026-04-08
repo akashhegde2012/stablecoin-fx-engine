@@ -4,20 +4,24 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "../interfaces/IOraklFeed.sol";
 import "../interfaces/IFXPool.sol";
 import "./LPToken.sol";
 
 /**
- @title FXPool
- @notice Single-sided liquidity pool for one stablecoin, priced via Orakl Network.
-*/
-contract FXPool is IFXPool, ReentrancyGuard, Ownable {
+ * @title FXPool
+ *  @notice Single-sided liquidity pool for one stablecoin, priced via Orakl Network.
+ */
+contract FXPool is IFXPool, ReentrancyGuard, Pausable, Ownable {
     using SafeERC20 for IERC20;
 
     uint256 public constant FEE_DENOMINATOR = 10_000;
     uint256 public constant MAX_FEE_RATE = 1_000; // 10%
+
+    /// @notice Permanently locked LP tokens on first deposit to prevent inflation attacks.
+    uint256 public constant MINIMUM_LIQUIDITY = 1_000;
 
     IERC20 private immutable _stablecoin;
     LPToken private immutable _lpToken;
@@ -25,16 +29,12 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
     uint8 private immutable _feedDecimals;
 
     address public fxEngine;
+    address public pendingFxEngine;
     uint256 public override feeRate;
 
-    /**
-    @param stablecoin_  Underlying ERC-20 stablecoin.
-    @param priceFeed_   Orakl Network aggregator proxy address (token/USD).
-    @param lpName_      LP token name.
-    @param lpSymbol_    LP token symbol.
-    @param feeRate_     Initial fee (bps, e.g. 30 = 0.30%).
-    @param owner_       Pool owner.
-    */
+    /// @notice Max allowed age (seconds) for oracle data before it's considered stale.
+    uint256 public maxStaleness = 3600;
+
     constructor(
         address stablecoin_,
         address priceFeed_,
@@ -59,7 +59,7 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
     // IFXPool - LP actions
     // -------------------------------------------------------------------------
 
-    function deposit(uint256 amount) external override nonReentrant returns (uint256 lpMinted) {
+    function deposit(uint256 amount) external override nonReentrant whenNotPaused returns (uint256 lpMinted) {
         require(amount > 0, "FXPool: zero amount");
 
         uint256 poolBalance = _stablecoin.balanceOf(address(this));
@@ -69,6 +69,9 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
 
         if (totalLp == 0 || poolBalance == 0) {
             lpMinted = amount;
+            require(lpMinted > MINIMUM_LIQUIDITY, "FXPool: initial deposit too small");
+            _lpToken.mint(address(0xdead), MINIMUM_LIQUIDITY);
+            lpMinted -= MINIMUM_LIQUIDITY;
         } else {
             lpMinted = (amount * totalLp) / poolBalance;
         }
@@ -79,7 +82,7 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         emit Deposited(msg.sender, amount, lpMinted);
     }
 
-    function withdraw(uint256 lpAmount) external override nonReentrant returns (uint256 amount) {
+    function withdraw(uint256 lpAmount) external override nonReentrant whenNotPaused returns (uint256 amount) {
         require(lpAmount > 0, "FXPool: zero lp amount");
 
         uint256 poolBalance = _stablecoin.balanceOf(address(this));
@@ -97,7 +100,7 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
 
     // Engine-only
 
-    function release(uint256 amount, address to) external override nonReentrant {
+    function release(uint256 amount, address to) external override nonReentrant whenNotPaused {
         require(msg.sender == fxEngine, "FXPool: only engine");
         require(to != address(0), "FXPool: zero recipient");
         require(amount <= _stablecoin.balanceOf(address(this)), "FXPool: insufficient liquidity");
@@ -108,10 +111,11 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
 
     // Views
 
-    /// @notice Latest USD price from the Orakl feed, plus the feed's decimal precision.
     function getPrice() external view override returns (int256 price, uint8 decimals_) {
-        (, price,) = _priceFeed.latestRoundData();
+        uint256 updatedAt;
+        (, price, updatedAt) = _priceFeed.latestRoundData();
         require(price > 0, "FXPool: invalid price");
+        require(block.timestamp - updatedAt <= maxStaleness, "FXPool: stale price");
         decimals_ = _feedDecimals;
     }
 
@@ -133,17 +137,42 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         return (_stablecoin.balanceOf(address(this)) * 1e18) / totalLp;
     }
 
+    // -------------------------------------------------------------------------
     // Owner admin
+    // -------------------------------------------------------------------------
 
-    function setFXEngine(address engine_) external onlyOwner {
+    /// @notice Propose a new FX engine. Must be accepted via acceptEngine().
+    function proposeEngine(address engine_) external onlyOwner {
         require(engine_ != address(0), "FXPool: zero engine");
-        emit EngineUpdated(fxEngine, engine_);
-        fxEngine = engine_;
+        pendingFxEngine = engine_;
+        emit EngineProposed(engine_);
+    }
+
+    /// @notice Accept a previously proposed engine, activating it.
+    function acceptEngine() external onlyOwner {
+        address pending = pendingFxEngine;
+        require(pending != address(0), "FXPool: no pending engine");
+        emit EngineUpdated(fxEngine, pending);
+        fxEngine = pending;
+        pendingFxEngine = address(0);
     }
 
     function setFeeRate(uint256 feeRate_) external onlyOwner {
         require(feeRate_ <= MAX_FEE_RATE, "FXPool: fee too high");
         emit FeeRateUpdated(feeRate, feeRate_);
         feeRate = feeRate_;
+    }
+
+    function setMaxStaleness(uint256 staleness_) external onlyOwner {
+        require(staleness_ >= 60, "FXPool: staleness too short");
+        maxStaleness = staleness_;
+    }
+
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
     }
 }

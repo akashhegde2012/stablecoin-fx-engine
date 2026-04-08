@@ -21,21 +21,21 @@ import "../src/FXEngine.sol";
 ///         ABI as Orakl Network's IAggregator.
 contract FXEngineTest is Test {
     // ── Price feed constants (8 decimals, USD) ────────────────────────────────
-    int256 constant MYR_USD  = 22_680_000;    // $0.2268
-    int256 constant SGD_USD  = 74_190_000;    // $0.7419
-    int256 constant IDRX_USD =      6_170;    // $0.0000617
-    int256 constant USDT_USD = 100_000_000;   // $1.0000
+    int256 constant MYR_USD = 22_680_000; // $0.2268
+    int256 constant SGD_USD = 74_190_000; // $0.7419
+    int256 constant IDRX_USD = 6_170; // $0.0000617
+    int256 constant USDT_USD = 100_000_000; // $1.0000
 
     uint256 constant FEE_RATE = 30; // 0.30 %
 
     // ── Actors ─────────────────────────────────────────────────────────────────
     address owner = makeAddr("owner");
     address alice = makeAddr("alice"); // LP provider
-    address bob   = makeAddr("bob");   // trader
+    address bob = makeAddr("bob"); // trader
 
     // ── Tokens ─────────────────────────────────────────────────────────────────
-    MYRToken  myr;
-    SGDToken  sgd;
+    MYRToken myr;
+    SGDToken sgd;
     IDRXToken idrx;
     USDTToken usdt;
 
@@ -46,69 +46,73 @@ contract FXEngineTest is Test {
     MockOraklFeed usdtFeed;
 
     // ── Pools & engine ─────────────────────────────────────────────────────────
-    FXPool   myrPool;
-    FXPool   sgdPool;
-    FXPool   idrxPool;
-    FXPool   usdtPool;
+    FXPool myrPool;
+    FXPool sgdPool;
+    FXPool idrxPool;
+    FXPool usdtPool;
     FXEngine engine;
 
     // ── Seed amounts ──────────────────────────────────────────────────────────
-    uint256 constant MYR_SEED  =     1_000_000 ether;
-    uint256 constant SGD_SEED  =       305_662 ether; // ≈ same USD value as 1M MYR
+    uint256 constant MYR_SEED = 1_000_000 ether;
+    uint256 constant SGD_SEED = 305_662 ether; // ≈ same USD value as 1M MYR
     uint256 constant IDRX_SEED = 3_677_472_000 ether; // ≈ same USD value
-    uint256 constant USDT_SEED =       226_800 ether; // ≈ same USD value
+    uint256 constant USDT_SEED = 226_800 ether; // ≈ same USD value
 
     // ─────────────────────────────────────────────────────────────────────────
     function setUp() public {
         vm.startPrank(owner);
 
         // Tokens
-        myr  = new MYRToken(owner);
-        sgd  = new SGDToken(owner);
+        myr = new MYRToken(owner);
+        sgd = new SGDToken(owner);
         idrx = new IDRXToken(owner);
         usdt = new USDTToken(owner);
 
         // Mock feeds (Orakl v0.2: 3-value latestRoundData)
-        myrFeed  = new MockOraklFeed(8, MYR_USD);
-        sgdFeed  = new MockOraklFeed(8, SGD_USD);
+        myrFeed = new MockOraklFeed(8, MYR_USD);
+        sgdFeed = new MockOraklFeed(8, SGD_USD);
         idrxFeed = new MockOraklFeed(8, IDRX_USD);
         usdtFeed = new MockOraklFeed(8, USDT_USD);
 
         // Pools
-        myrPool  = new FXPool(address(myr),  address(myrFeed),  "Wrapped MYR",  "wMYR",  FEE_RATE, owner);
-        sgdPool  = new FXPool(address(sgd),  address(sgdFeed),  "Wrapped SGD",  "wSGD",  FEE_RATE, owner);
+        myrPool = new FXPool(address(myr), address(myrFeed), "Wrapped MYR", "wMYR", FEE_RATE, owner);
+        sgdPool = new FXPool(address(sgd), address(sgdFeed), "Wrapped SGD", "wSGD", FEE_RATE, owner);
         idrxPool = new FXPool(address(idrx), address(idrxFeed), "Wrapped IDRX", "wIDRX", FEE_RATE, owner);
         usdtPool = new FXPool(address(usdt), address(usdtFeed), "Wrapped USDT", "wUSDT", FEE_RATE, owner);
 
         // Engine
         engine = new FXEngine(owner);
-        engine.registerPool(address(myr),  address(myrPool));
-        engine.registerPool(address(sgd),  address(sgdPool));
+        engine.registerPool(address(myr), address(myrPool));
+        engine.registerPool(address(sgd), address(sgdPool));
         engine.registerPool(address(idrx), address(idrxPool));
         engine.registerPool(address(usdt), address(usdtPool));
 
         // Authorise engine in pools
-        myrPool.setFXEngine(address(engine));
-        sgdPool.setFXEngine(address(engine));
-        idrxPool.setFXEngine(address(engine));
-        usdtPool.setFXEngine(address(engine));
+        myrPool.proposeEngine(address(engine));
+        myrPool.acceptEngine();
+        sgdPool.proposeEngine(address(engine));
+        sgdPool.acceptEngine();
+        idrxPool.proposeEngine(address(engine));
+        idrxPool.acceptEngine();
+        usdtPool.proposeEngine(address(engine));
+        usdtPool.acceptEngine();
 
         // Mint to alice (LP) and bob (trader)
-        myr.mint(alice,  MYR_SEED  + 10_000 ether);
-        sgd.mint(alice,  SGD_SEED  + 10_000 ether);
+        myr.mint(alice, MYR_SEED + 10_000 ether);
+        sgd.mint(alice, SGD_SEED + 10_000 ether);
         idrx.mint(alice, IDRX_SEED + 1_000_000_000 ether);
         usdt.mint(alice, USDT_SEED + 10_000 ether);
 
-        myr.mint(bob,  100_000 ether);
-        sgd.mint(bob,  100_000 ether);
-        usdt.mint(bob,  10_000 ether);
+        myr.mint(bob, 100_000 ether);
+        sgd.mint(bob, 100_000 ether);
+        usdt.mint(bob, 10_000 ether);
 
         vm.stopPrank();
 
         // Alice provides initial liquidity
         vm.startPrank(alice);
-        myr.approve(address(myrPool),   MYR_SEED);
-        sgd.approve(address(sgdPool),   SGD_SEED);
+        myr.approve(address(myrPool), MYR_SEED);
+        sgd.approve(address(sgdPool), SGD_SEED);
         idrx.approve(address(idrxPool), IDRX_SEED);
         usdt.approve(address(usdtPool), USDT_SEED);
 
@@ -124,20 +128,20 @@ contract FXEngineTest is Test {
     // =========================================================================
 
     function test_PoolsSeeded() public view {
-        assertEq(myrPool.getPoolBalance(),  MYR_SEED);
-        assertEq(sgdPool.getPoolBalance(),  SGD_SEED);
+        assertEq(myrPool.getPoolBalance(), MYR_SEED);
+        assertEq(sgdPool.getPoolBalance(), SGD_SEED);
         assertEq(idrxPool.getPoolBalance(), IDRX_SEED);
         assertEq(usdtPool.getPoolBalance(), USDT_SEED);
     }
 
     function test_LPTokensMinted() public view {
         LPToken wMYR = LPToken(myrPool.lpToken());
-        assertEq(wMYR.balanceOf(alice), MYR_SEED);
+        assertEq(wMYR.balanceOf(alice), MYR_SEED - 1000);
     }
 
     function test_EnginePoolsRegistered() public view {
-        assertEq(address(engine.pools(address(myr))),  address(myrPool));
-        assertEq(address(engine.pools(address(sgd))),  address(sgdPool));
+        assertEq(address(engine.pools(address(myr))), address(myrPool));
+        assertEq(address(engine.pools(address(sgd))), address(sgdPool));
         assertEq(address(engine.pools(address(idrx))), address(idrxPool));
         assertEq(address(engine.pools(address(usdt))), address(usdtPool));
         assertEq(engine.getRegisteredTokens().length, 4);
@@ -171,7 +175,7 @@ contract FXEngineTest is Test {
         uint256 quote = engine.getQuote(address(myr), address(sgd), amountIn);
 
         uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
-        uint256 fee      = (grossOut * FEE_RATE) / 10_000;
+        uint256 fee = (grossOut * FEE_RATE) / 10_000;
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
@@ -187,7 +191,7 @@ contract FXEngineTest is Test {
         uint256 quote = engine.getQuote(address(usdt), address(idrx), amountIn);
 
         uint256 grossOut = (amountIn * uint256(USDT_USD)) / uint256(IDRX_USD);
-        uint256 fee      = (grossOut * FEE_RATE) / 10_000;
+        uint256 fee = (grossOut * FEE_RATE) / 10_000;
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
@@ -315,7 +319,7 @@ contract FXEngineTest is Test {
         assertEq(wMYR.balanceOf(lp2), 500_000 ether);
 
         assertEq(myrPool.getPoolBalance(), 1_500_000 ether);
-        assertEq(wMYR.totalSupply(),       1_500_000 ether);
+        assertEq(wMYR.totalSupply(), 1_500_000 ether);
 
         vm.startPrank(lp2);
         uint256 returned = myrPool.withdraw(lpMinted);
@@ -329,7 +333,7 @@ contract FXEngineTest is Test {
         FXPool sgdP = sgdPool;
         LPToken wSGD = LPToken(sgdP.lpToken());
 
-        uint256 supplyBefore  = wSGD.totalSupply();
+        uint256 supplyBefore = wSGD.totalSupply();
         uint256 balanceBefore = sgdP.getPoolBalance();
 
         uint256 amountIn = 1_000 ether;
@@ -342,14 +346,14 @@ contract FXEngineTest is Test {
         vm.stopPrank();
 
         uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
-        uint256 fee      = (grossOut * FEE_RATE) / 10_000;
+        uint256 fee = (grossOut * FEE_RATE) / 10_000;
 
         uint256 balanceAfter = sgdP.getPoolBalance();
         assertEq(balanceAfter, balanceBefore - netOut);
         assertEq(wSGD.totalSupply(), supplyBefore);
 
         uint256 rateBefore = (balanceBefore * 1e18) / supplyBefore;
-        uint256 rateAfter  = (balanceAfter  * 1e18) / wSGD.totalSupply();
+        uint256 rateAfter = (balanceAfter * 1e18) / wSGD.totalSupply();
 
         assertLt(rateAfter, rateBefore);
         assertEq(balanceBefore - balanceAfter, netOut);
@@ -435,13 +439,13 @@ contract FXEngineTest is Test {
     }
 
     function test_GetPoolInfo() public view {
-        (address pool, address lpToken, uint256 balance, uint256 fee, int256 price, uint8 dec)
-            = engine.getPoolInfo(address(myr));
-        assertEq(pool,    address(myrPool));
+        (address pool, address lpToken, uint256 balance, uint256 fee, int256 price, uint8 dec) =
+            engine.getPoolInfo(address(myr));
+        assertEq(pool, address(myrPool));
         assertEq(lpToken, myrPool.lpToken());
         assertEq(balance, MYR_SEED);
-        assertEq(fee,     FEE_RATE);
-        assertEq(price,   MYR_USD);
+        assertEq(fee, FEE_RATE);
+        assertEq(price, MYR_USD);
         assertEq(dec, 8);
     }
 }

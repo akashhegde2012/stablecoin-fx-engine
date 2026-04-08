@@ -6,7 +6,5 @@ import "./StablecoinToken.sol";
 /// @title IDRXToken
 /// @notice ERC-20 stablecoin pegged 1:1 to the Indonesian Rupiah (IDR).
 contract IDRXToken is StablecoinToken {
-    constructor(address owner_)
-        StablecoinToken("Indonesian Rupiah Stablecoin", "IDRX", 18, owner_)
-    {}
+    constructor(address owner_) StablecoinToken("Indonesian Rupiah Stablecoin", "IDRX", 18, owner_) {}
 }

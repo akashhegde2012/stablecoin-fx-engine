@@ -6,7 +6,5 @@ import "./StablecoinToken.sol";
 /// @title MYRToken
 /// @notice ERC-20 stablecoin pegged 1:1 to the Malaysian Ringgit (MYR).
 contract MYRToken is StablecoinToken {
-    constructor(address owner_)
-        StablecoinToken("Malaysian Ringgit Stablecoin", "MYR", 18, owner_)
-    {}
+    constructor(address owner_) StablecoinToken("Malaysian Ringgit Stablecoin", "MYR", 18, owner_) {}
 }

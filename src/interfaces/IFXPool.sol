@@ -1,9 +1,10 @@
 // SPDX-License-Identifier: MIT
 pragma solidity ^0.8.20;
 
-/** @title IFXPool
- @notice Interface for a single-sided FX liquidity pool
-*/
+/**
+ * @title IFXPool
+ *  @notice Interface for a single-sided FX liquidity pool
+ */
 interface IFXPool {
     // Events
     event Deposited(address indexed user, uint256 amount, uint256 lpMinted);
@@ -11,6 +12,7 @@ interface IFXPool {
     event Released(uint256 amount, address indexed to);
     event FeeRateUpdated(uint256 oldRate, uint256 newRate);
     event EngineUpdated(address indexed oldEngine, address indexed newEngine);
+    event EngineProposed(address indexed proposedEngine);
 
     // LP actions
 

@@ -155,7 +155,98 @@ forge script script/MintToWallet.s.sol \
   --private-key <DEPLOYER_KEY> \
   --sig "run(address)" <RECIPIENT>
 ```
+Here's how to run the full project end-to-end:
 
+## 1. Install Dependencies
+
+```bash
+cd "/Users/himanshushankar/Devlopement/KAIA LABS/SSL_FX_Eng"
+
+# Initialize git submodules (OpenZeppelin, forge-std, Orakl, etc.)
+git submodule update --init --recursive
+```
+
+## 2. Build
+
+```bash
+forge build
+```
+
+## 3. Run Tests
+
+```bash
+# All 111 tests
+forge test
+
+# With verbose output (see logs, gas)
+forge test -vvv
+
+# Specific suite only
+forge test --match-contract FXEngineTest
+forge test --match-contract YieldVaultTest
+forge test --match-contract SettlementEngineTest
+forge test --match-contract StrategyAdaptersTest
+forge test --match-contract YieldDistributorTest
+
+# Single test
+forge test --match-test test_Swap_MYRtoSGD -vvv
+```
+
+## 4. Deploy to Local Anvil
+
+```bash
+# Terminal 1: Start local chain
+anvil
+
+# Terminal 2: Deploy contracts
+forge script script/Deploy.s.sol \
+  --rpc-url http://127.0.0.1:8545 \
+  --broadcast \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80
+```
+
+The private key above is Anvil's default account #0. The script deploys all tokens, pools, and the FXEngine, then seeds initial liquidity.
+
+## 5. Mint Test Tokens (Local)
+
+```bash
+# Mint USDT, MYR, SGD, IDRX to any address
+forge script script/MintToWallet.s.sol \
+  --rpc-url http://127.0.0.1:8545 \
+  --broadcast \
+  --private-key 0xac0974bec39a17e36ba4a6b4d238ff944bacb478cbed5efcae784d7bf4f2ff80 \
+  --sig "run(address)" 0xf39Fd6e51aad88F6F4ce6aB8827279cffFb92266
+```
+
+## 6. Deploy to Kaia Kairos Testnet
+
+```bash
+forge script script/Deploy.s.sol \
+  --rpc-url https://public-en-kairos.node.kaia.io \
+  --broadcast \
+  --private-key <YOUR_PRIVATE_KEY>
+```
+
+## 7. Run the Frontend
+
+```bash
+cd app
+npm install
+npm run dev
+```
+
+Opens at `http://localhost:3000`.
+
+## Quick Reference
+
+| Command | What it does |
+|---------|-------------|
+| `forge build` | Compile all contracts |
+| `forge test` | Run all 111 tests |
+| `forge test --summary` | Test results table |
+| `forge fmt` | Format all Solidity files |
+| `forge snapshot` | Gas usage snapshot |
+| `anvil` | Start local Ethereum node |
 ## License
 
 MIT

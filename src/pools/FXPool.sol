@@ -31,6 +31,10 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
     uint256 public utilizationFactor;            // scaling factor (bps), e.g. 2000
     uint256 public maxDynamicFeeRate;            // cap (bps), e.g. 300 = 3.00%
 
+    // ── Platform fee distribution ──────────────────────────────────────────────
+    uint256 public override platformFeeBps;      // platform share of total fee (bps), e.g. 3000 = 30%
+    address public override platformTreasury;
+
     /**
     @param stablecoin_        Underlying ERC-20 stablecoin.
     @param oracle_            OracleAggregator address (dual Orakl + Pyth).
@@ -39,6 +43,8 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
     @param baseFeeRate_       Base fee (bps, e.g. 10 = 0.10%).
     @param utilizationFactor_ Utilization scaling factor (bps, e.g. 2000).
     @param maxDynamicFeeRate_ Maximum dynamic fee cap (bps, e.g. 300 = 3%).
+    @param platformFeeBps_    Platform share of total fee (bps, e.g. 3000 = 30%).
+    @param platformTreasury_  Address receiving platform fees.
     @param owner_             Pool owner.
     */
     constructor(
@@ -49,6 +55,8 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         uint256 baseFeeRate_,
         uint256 utilizationFactor_,
         uint256 maxDynamicFeeRate_,
+        uint256 platformFeeBps_,
+        address platformTreasury_,
         address owner_
     ) Ownable(owner_) {
         require(stablecoin_ != address(0), "FXPool: zero stablecoin");
@@ -56,12 +64,16 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         require(baseFeeRate_ <= MAX_FEE_RATE, "FXPool: base fee too high");
         require(maxDynamicFeeRate_ <= MAX_FEE_RATE, "FXPool: max fee too high");
         require(baseFeeRate_ <= maxDynamicFeeRate_, "FXPool: base > max");
+        require(platformFeeBps_ <= FEE_DENOMINATOR, "FXPool: platform bps too high");
+        require(platformTreasury_ != address(0), "FXPool: zero treasury");
 
         _stablecoin = IERC20(stablecoin_);
         _oracle = OracleAggregator(oracle_);
         feeRate = baseFeeRate_;
         utilizationFactor = utilizationFactor_;
         maxDynamicFeeRate = maxDynamicFeeRate_;
+        platformFeeBps = platformFeeBps_;
+        platformTreasury = platformTreasury_;
 
         _lpToken = new LPToken(lpName_, lpSymbol_, address(this));
     }
@@ -115,6 +127,15 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
 
         _stablecoin.safeTransfer(to, amount);
         emit Released(amount, to);
+    }
+
+    /// @notice Transfer platform fee to the treasury. Engine-only.
+    function releasePlatformFee(uint256 amount) external override nonReentrant {
+        require(msg.sender == fxEngine, "FXPool: only engine");
+        require(amount <= _stablecoin.balanceOf(address(this)), "FXPool: insufficient liquidity");
+
+        _stablecoin.safeTransfer(platformTreasury, amount);
+        emit PlatformFeeDistributed(amount, platformTreasury);
     }
 
     // -------------------------------------------------------------------------
@@ -198,5 +219,17 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         require(feeRate <= maxFeeRate_, "FXPool: base > new max");
         emit MaxDynamicFeeRateUpdated(maxDynamicFeeRate, maxFeeRate_);
         maxDynamicFeeRate = maxFeeRate_;
+    }
+
+    function setPlatformFeeBps(uint256 bps_) external onlyOwner {
+        require(bps_ <= FEE_DENOMINATOR, "FXPool: platform bps too high");
+        emit PlatformFeeBpsUpdated(platformFeeBps, bps_);
+        platformFeeBps = bps_;
+    }
+
+    function setPlatformTreasury(address treasury_) external onlyOwner {
+        require(treasury_ != address(0), "FXPool: zero treasury");
+        emit PlatformTreasuryUpdated(platformTreasury, treasury_);
+        platformTreasury = treasury_;
     }
 }

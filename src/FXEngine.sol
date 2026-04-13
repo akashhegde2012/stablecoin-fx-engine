@@ -136,12 +136,15 @@ contract FXEngine is ReentrancyGuard, Ownable {
         require(amountOut >= minAmountOut, "FXEngine: slippage exceeded");
         require(amountOut <= poolOut.getPoolBalance(), "FXEngine: insufficient output liquidity");
 
-        // ── Execute 
+        // ── Execute
         // 1. Pull tokenIn from the user into inPool
         IERC20(tokenIn).safeTransferFrom(msg.sender, address(poolIn), amountIn);
 
         // 2. Release tokenOut from outPool to recipient
         poolOut.release(amountOut, to);
+
+        // 3. Distribute platform fee
+        _distributePlatformFee(poolIn, poolOut, amountIn);
 
         emit Swapped(msg.sender, tokenIn, tokenOut, amountIn, amountOut, to);
     }
@@ -186,6 +189,9 @@ contract FXEngine is ReentrancyGuard, Ownable {
 
         IERC20(tokenIn).safeTransferFrom(msg.sender, address(poolIn), amountIn);
         poolOut.release(amountOut, to);
+
+        // Distribute platform fee
+        _distributePlatformFee(poolIn, poolOut, amountIn);
 
         // Refund excess ETH (Pyth fee)
         if (msg.value > fee) {
@@ -296,5 +302,36 @@ contract FXEngine is ReentrancyGuard, Ownable {
         uint256 effectiveFeeRate = poolOut.getEffectiveFeeRate(grossOut);
         uint256 fee = (grossOut * effectiveFeeRate) / FEE_DENOMINATOR;
         amountOut = grossOut - fee;
+    }
+
+    /**
+     * @notice Distribute platform fee from the output pool after a swap.
+     *         fee = grossOut - amountOut. Platform gets fee * platformFeeBps / 10000.
+     *         The remaining fee (LP share) stays in the pool implicitly.
+     */
+    function _distributePlatformFee(IFXPool poolIn, IFXPool poolOut, uint256 amountIn) internal {
+        // Recompute grossOut to derive the fee
+        (int256 priceIn, uint8 decIn) = poolIn.getPrice();
+        (int256 priceOut, uint8 decOut) = poolOut.getPrice();
+
+        uint256 uPriceIn = uint256(priceIn);
+        uint256 uPriceOut = uint256(priceOut);
+
+        uint256 grossOut;
+        if (decIn == decOut) {
+            grossOut = (amountIn * uPriceIn) / uPriceOut;
+        } else if (decIn > decOut) {
+            grossOut = (amountIn * uPriceIn) / (uPriceOut * 10 ** (decIn - decOut));
+        } else {
+            grossOut = (amountIn * uPriceIn * 10 ** (decOut - decIn)) / uPriceOut;
+        }
+
+        uint256 effectiveFeeRate = poolOut.getEffectiveFeeRate(grossOut);
+        uint256 totalFee = (grossOut * effectiveFeeRate) / FEE_DENOMINATOR;
+        uint256 platformFee = (totalFee * poolOut.platformFeeBps()) / FEE_DENOMINATOR;
+
+        if (platformFee > 0) {
+            poolOut.releasePlatformFee(platformFee);
+        }
     }
 }

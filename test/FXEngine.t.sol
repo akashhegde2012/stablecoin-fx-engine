@@ -44,12 +44,14 @@ contract FXEngineTest is Test {
     uint256 constant BASE_FEE_RATE = 10;       // 0.10% base fee (bps)
     uint256 constant UTILIZATION_FACTOR = 2000; // scaling factor (bps)
     uint256 constant MAX_DYNAMIC_FEE = 300;     // 3.00% cap (bps)
+    uint256 constant PLATFORM_FEE_BPS = 3000;   // 30% of total fees to platform
     uint256 constant DEVIATION_BPS = 300;       // 3 %
 
     // ── Actors ─────────────────────────────────────────────────────────────────
     address owner = makeAddr("owner");
     address alice = makeAddr("alice"); // LP provider
     address bob   = makeAddr("bob");   // trader
+    address treasury = makeAddr("treasury");
 
     // ── Tokens ─────────────────────────────────────────────────────────────────
     MYRToken  myr;
@@ -131,10 +133,10 @@ contract FXEngineTest is Test {
         );
 
         // Pools (now take oracle aggregator + dynamic fee params)
-        myrPool  = new FXPool(address(myr),  address(myrOracle),  "Wrapped MYR",  "wMYR",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, owner);
-        sgdPool  = new FXPool(address(sgd),  address(sgdOracle),  "Wrapped SGD",  "wSGD",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, owner);
-        idrxPool = new FXPool(address(idrx), address(idrxOracle), "Wrapped IDRX", "wIDRX", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, owner);
-        usdtPool = new FXPool(address(usdt), address(usdtOracle), "Wrapped USDT", "wUSDT", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, owner);
+        myrPool  = new FXPool(address(myr),  address(myrOracle),  "Wrapped MYR",  "wMYR",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, treasury, owner);
+        sgdPool  = new FXPool(address(sgd),  address(sgdOracle),  "Wrapped SGD",  "wSGD",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, treasury, owner);
+        idrxPool = new FXPool(address(idrx), address(idrxOracle), "Wrapped IDRX", "wIDRX", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, treasury, owner);
+        usdtPool = new FXPool(address(usdt), address(usdtOracle), "Wrapped USDT", "wUSDT", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, treasury, owner);
 
         // Engine (now requires pyth address)
         engine = new FXEngine(owner, address(pyth));
@@ -277,6 +279,7 @@ contract FXEngineTest is Test {
         // Dynamic fee: get effective rate from SGD pool
         uint256 effectiveRate = sgdPool.getEffectiveFeeRate(grossOut);
         uint256 fee      = (grossOut * effectiveRate) / 10_000;
+        uint256 platformFee = (fee * PLATFORM_FEE_BPS) / 10_000;
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
@@ -292,6 +295,7 @@ contract FXEngineTest is Test {
         uint256 grossOut = (amountIn * uint256(USDT_USD)) / uint256(IDRX_USD);
         uint256 effectiveRate = idrxPool.getEffectiveFeeRate(grossOut);
         uint256 fee      = (grossOut * effectiveRate) / 10_000;
+        uint256 platformFee = (fee * PLATFORM_FEE_BPS) / 10_000;
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
@@ -329,7 +333,12 @@ contract FXEngineTest is Test {
         assertEq(sgd.balanceOf(bob), sgdBefore + actualOut);
 
         assertEq(myrPool.getPoolBalance(), MYR_SEED + amountIn);
-        assertEq(sgdPool.getPoolBalance(), SGD_SEED - actualOut);
+        // Pool lost actualOut + platformFee (LP fee stays in pool)
+        uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
+        uint256 effectiveRate = sgdPool.getEffectiveFeeRate(grossOut);
+        uint256 totalFee = (grossOut * effectiveRate) / 10_000;
+        uint256 platformFee = (totalFee * PLATFORM_FEE_BPS) / 10_000;
+        assertEq(sgdPool.getPoolBalance(), SGD_SEED - actualOut - platformFee);
     }
 
     function test_Swap_SGDtoMYR() public {
@@ -443,16 +452,17 @@ contract FXEngineTest is Test {
         uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
         uint256 effectiveRate = sgdP.getEffectiveFeeRate(grossOut);
         uint256 fee      = (grossOut * effectiveRate) / 10_000;
+        uint256 platformFee = (fee * PLATFORM_FEE_BPS) / 10_000;
 
         uint256 balanceAfter = sgdP.getPoolBalance();
-        assertEq(balanceAfter, balanceBefore - netOut);
+        assertEq(balanceAfter, balanceBefore - netOut - platformFee);
         assertEq(wSGD.totalSupply(), supplyBefore);
 
         uint256 rateBefore = (balanceBefore * 1e18) / supplyBefore;
         uint256 rateAfter  = (balanceAfter  * 1e18) / wSGD.totalSupply();
 
         assertLt(rateAfter, rateBefore);
-        assertEq(balanceBefore - balanceAfter, netOut);
+        assertEq(balanceBefore - balanceAfter, netOut + platformFee);
         assertEq(grossOut - netOut, fee);
         assertGt(fee, 0);
 
@@ -613,5 +623,102 @@ contract FXEngineTest is Test {
         uint256 effectiveRate = sgdPool.getEffectiveFeeRate(grossOut);
         assertGt(effectiveRate, BASE_FEE_RATE);
         console.log("10k MYR swap - effective fee rate (bps):", effectiveRate);
+    }
+
+    // =========================================================================
+    // Platform fee distribution tests
+    // =========================================================================
+
+    function test_PlatformFee_70_30_Split() public {
+        uint256 amountIn = 1_000 ether;
+        vm.prank(owner);
+        myr.mint(bob, amountIn);
+
+        uint256 treasuryBalBefore = sgd.balanceOf(treasury);
+        uint256 poolBalBefore = sgdPool.getPoolBalance();
+
+        vm.startPrank(bob);
+        myr.approve(address(engine), amountIn);
+        uint256 netOut = engine.swap(address(myr), address(sgd), amountIn, 0, bob);
+        vm.stopPrank();
+
+        // Compute expected fee
+        uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
+        uint256 effectiveRate = sgdPool.getEffectiveFeeRate(grossOut);
+        uint256 totalFee = (grossOut * effectiveRate) / 10_000;
+        uint256 expectedPlatformFee = (totalFee * PLATFORM_FEE_BPS) / 10_000;
+        uint256 expectedLpFee = totalFee - expectedPlatformFee;
+
+        // Treasury received platform fee
+        uint256 treasuryBalAfter = sgd.balanceOf(treasury);
+        assertEq(treasuryBalAfter - treasuryBalBefore, expectedPlatformFee);
+
+        // Pool lost: netOut + platformFee (LP fee stays in pool)
+        uint256 poolBalAfter = sgdPool.getPoolBalance();
+        assertEq(poolBalBefore - poolBalAfter, netOut + expectedPlatformFee);
+
+        // LP fee = totalFee - platformFee stays in pool implicitly
+        assertGt(expectedLpFee, 0);
+        assertGt(expectedPlatformFee, 0);
+
+        console.log("Total fee:", totalFee);
+        console.log("Platform fee (30%):", expectedPlatformFee);
+        console.log("LP fee (70%):", expectedLpFee);
+    }
+
+    function test_PlatformFee_TreasuryReceivesCorrectToken() public {
+        // Swap USDT → MYR: platform fee should be in MYR (output pool token)
+        uint256 amountIn = 100 ether;
+        vm.prank(owner);
+        usdt.mint(bob, amountIn);
+
+        uint256 treasuryMyrBefore = myr.balanceOf(treasury);
+
+        vm.startPrank(bob);
+        usdt.approve(address(engine), amountIn);
+        engine.swap(address(usdt), address(myr), amountIn, 0, bob);
+        vm.stopPrank();
+
+        // Treasury should have received MYR (not USDT)
+        assertGt(myr.balanceOf(treasury), treasuryMyrBefore);
+    }
+
+    function test_PlatformFee_SmallTrade_NearZero() public {
+        // Very small trade: fee is tiny, platform fee should be minimal
+        uint256 amountIn = 1 ether;
+        vm.prank(owner);
+        myr.mint(bob, amountIn);
+
+        uint256 treasuryBefore = sgd.balanceOf(treasury);
+
+        vm.startPrank(bob);
+        myr.approve(address(engine), amountIn);
+        engine.swap(address(myr), address(sgd), amountIn, 0, bob);
+        vm.stopPrank();
+
+        // Platform fee should be very small but > 0
+        uint256 treasuryAfter = sgd.balanceOf(treasury);
+        assertGt(treasuryAfter, treasuryBefore);
+    }
+
+    function test_PlatformFee_Setters() public {
+        vm.startPrank(owner);
+        sgdPool.setPlatformFeeBps(5000); // 50%
+        assertEq(sgdPool.platformFeeBps(), 5000);
+
+        address newTreasury = makeAddr("newTreasury");
+        sgdPool.setPlatformTreasury(newTreasury);
+        assertEq(sgdPool.platformTreasury(), newTreasury);
+        vm.stopPrank();
+    }
+
+    function test_PlatformFee_OnlyOwnerCanSet() public {
+        vm.prank(alice);
+        vm.expectRevert();
+        sgdPool.setPlatformFeeBps(1000);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        sgdPool.setPlatformTreasury(alice);
     }
 }

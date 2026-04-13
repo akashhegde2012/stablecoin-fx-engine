@@ -52,6 +52,9 @@ contract Deploy is Script {
     uint256 constant UTILIZATION_FACTOR = 2000; // scaling factor (bps)
     uint256 constant MAX_DYNAMIC_FEE = 300;     // 3.00% cap (bps)
 
+    // Platform fee distribution
+    uint256 constant PLATFORM_FEE_BPS = 3000;   // 30% of total fees to platform
+
     uint256 constant DEVIATION_BPS = 300; // 3 % max deviation between oracles
 
     function run() external {
@@ -90,11 +93,11 @@ contract Deploy is Script {
         console.log("IDRX oracle:", address(idrxOracle));
         console.log("USDT oracle:", address(usdtOracle));
 
-        // 3. Deploy FX pools (using oracle aggregators + dynamic fees)
-        FXPool myrPool  = new FXPool(address(myr),  address(myrOracle),  "Wrapped MYR",  "wMYR",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, deployer);
-        FXPool sgdPool  = new FXPool(address(sgd),  address(sgdOracle),  "Wrapped SGD",  "wSGD",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, deployer);
-        FXPool idrxPool = new FXPool(address(idrx), address(idrxOracle), "Wrapped IDRX", "wIDRX", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, deployer);
-        FXPool usdtPool = new FXPool(address(usdt), address(usdtOracle), "Wrapped USDT", "wUSDT", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, deployer);
+        // 3. Deploy FX pools (using oracle aggregators + dynamic fees + platform fee)
+        FXPool myrPool  = new FXPool(address(myr),  address(myrOracle),  "Wrapped MYR",  "wMYR",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, deployer, deployer);
+        FXPool sgdPool  = new FXPool(address(sgd),  address(sgdOracle),  "Wrapped SGD",  "wSGD",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, deployer, deployer);
+        FXPool idrxPool = new FXPool(address(idrx), address(idrxOracle), "Wrapped IDRX", "wIDRX", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, deployer, deployer);
+        FXPool usdtPool = new FXPool(address(usdt), address(usdtOracle), "Wrapped USDT", "wUSDT", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, deployer, deployer);
 
         console.log("\n=== FX Pools ===");
         console.log("MYR  pool:", address(myrPool),  " lpToken:", myrPool.lpToken());

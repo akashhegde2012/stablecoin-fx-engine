@@ -164,10 +164,17 @@ export function SwapCard() {
     });
   };
 
-  const handleSwap = () => {
+  const [pythStatus, setPythStatus] = useState<string>("");
+
+  const handleSwap = async () => {
     if (!address || !quoteRaw) return;
-    const amtIn   = parseUnits(amountIn, 18);
-    const minOut  = (quoteRaw * BigInt(Math.floor((1 - parseFloat(slippage) / 100) * 10000))) / 10000n;
+    const amtIn  = parseUnits(amountIn, 18);
+    const minOut = (quoteRaw * BigInt(Math.floor((1 - parseFloat(slippage) / 100) * 10000))) / 10000n;
+
+    // Use swap() directly — Orakl is the primary push oracle and already on-chain.
+    // swapWithPythUpdate() triggers cross-validation between Orakl (testnet mock prices)
+    // and Pyth (real market prices), which fails with "OA: price deviation too high".
+    setPythStatus("");
     swap({
       address:      FXENGINE_ADDRESS,
       abi:          FXENGINE_ABI,
@@ -330,9 +337,9 @@ export function SwapCard() {
             disabled={!isSwapReady || txPending}
           >
             {swapLoading || swapConfirming ? (
-              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Swapping...</>
+              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> {pythStatus || "Swapping..."}</>
             ) : (
-              `Swap ${tokenIn} → ${tokenOut}`
+              `Swap ${tokenIn} \u2192 ${tokenOut}`
             )}
           </Button>
         )}

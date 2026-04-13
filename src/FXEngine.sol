@@ -5,6 +5,7 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
+import "@pythnetwork/pyth-sdk-solidity/IPyth.sol";
 
 import "./interfaces/IFXPool.sol";
 
@@ -42,6 +43,9 @@ contract FXEngine is ReentrancyGuard, Ownable {
     /// @notice Ordered list of registered token addresses for enumeration.
     address[] public registeredTokens;
 
+    /// @notice Pyth contract for on-chain price updates (pull oracle).
+    IPyth public pyth;
+
     // -------------------------------------------------------------------------
     // Events
     // -------------------------------------------------------------------------
@@ -57,9 +61,16 @@ contract FXEngine is ReentrancyGuard, Ownable {
     );
 
     // Constructor
-    constructor(address owner_) Ownable(owner_) {}
+    constructor(address owner_, address pyth_) Ownable(owner_) {
+        pyth = IPyth(pyth_);
+    }
 
     // Admin
+
+    /// @notice Update the Pyth contract address.
+    function setPyth(address pyth_) external onlyOwner {
+        pyth = IPyth(pyth_);
+    }
 
     /// @notice Register a pool for a token. Overwrites any existing pool.
     /// @dev    Also authorises this engine inside the pool via FXPool.setFXEngine().
@@ -131,6 +142,56 @@ contract FXEngine is ReentrancyGuard, Ownable {
 
         // 2. Release tokenOut from outPool to recipient
         poolOut.release(amountOut, to);
+
+        emit Swapped(msg.sender, tokenIn, tokenOut, amountIn, amountOut, to);
+    }
+
+    /**
+    @notice Update Pyth price feeds and execute a swap in a single transaction.
+            This ensures the Pyth oracle has fresh data before the swap reads prices.
+    @param updateData  Encoded Pyth price update data (from Hermes).
+    @param tokenIn       ERC-20 token being sold.
+    @param tokenOut      ERC-20 token being bought.
+    @param amountIn      Amount of tokenIn (18 dec).
+    @param minAmountOut  Minimum acceptable output (slippage protection).
+    @param to            Recipient of tokenOut.
+    @return amountOut    Actual tokenOut received.
+    */
+    function swapWithPythUpdate(
+        bytes[] calldata updateData,
+        address tokenIn,
+        address tokenOut,
+        uint256 amountIn,
+        uint256 minAmountOut,
+        address to
+    ) external payable nonReentrant returns (uint256 amountOut) {
+        // 1. Update Pyth price feeds
+        uint fee = pyth.getUpdateFee(updateData);
+        require(msg.value >= fee, "FXEngine: insufficient pyth fee");
+        pyth.updatePriceFeeds{value: fee}(updateData);
+
+        // 2. Execute swap (same logic as swap())
+        require(amountIn > 0, "FXEngine: zero amountIn");
+        require(to != address(0), "FXEngine: zero recipient");
+        require(tokenIn != tokenOut, "FXEngine: same token");
+
+        IFXPool poolIn = pools[tokenIn];
+        IFXPool poolOut = pools[tokenOut];
+        require(address(poolIn) != address(0), "FXEngine: no pool for tokenIn");
+        require(address(poolOut) != address(0), "FXEngine: no pool for tokenOut");
+
+        amountOut = _computeAmountOut(amountIn, poolIn, poolOut);
+        require(amountOut >= minAmountOut, "FXEngine: slippage exceeded");
+        require(amountOut <= poolOut.getPoolBalance(), "FXEngine: insufficient output liquidity");
+
+        IERC20(tokenIn).safeTransferFrom(msg.sender, address(poolIn), amountIn);
+        poolOut.release(amountOut, to);
+
+        // Refund excess ETH (Pyth fee)
+        if (msg.value > fee) {
+            (bool ok,) = msg.sender.call{value: msg.value - fee}("");
+            require(ok, "FXEngine: refund failed");
+        }
 
         emit Swapped(msg.sender, tokenIn, tokenOut, amountIn, amountOut, to);
     }

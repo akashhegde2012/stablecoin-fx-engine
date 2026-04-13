@@ -11,14 +11,15 @@ import "../src/tokens/SGDToken.sol";
 import "../src/tokens/IDRXToken.sol";
 import "../src/tokens/USDTToken.sol";
 
+import "../src/oracles/OracleAggregator.sol";
 import "../src/pools/FXPool.sol";
 import "../src/pools/LPToken.sol";
 import "../src/FXEngine.sol";
 
+import "@pythnetwork/pyth-sdk-solidity/MockPyth.sol";
+
 /// @title FXEngineTest
-/// @notice Full integration test suite for the FX engine.
-///         Uses MockV3Aggregator which implements the same latestRoundData/decimals
-///         ABI as Orakl Network's IAggregator.
+/// @notice Full integration test suite for the FX engine with dual-oracle support.
 contract FXEngineTest is Test {
     // ── Price feed constants (8 decimals, USD) ────────────────────────────────
     int256 constant MYR_USD  = 22_680_000;    // $0.2268
@@ -26,7 +27,22 @@ contract FXEngineTest is Test {
     int256 constant IDRX_USD =      6_170;    // $0.0000617
     int256 constant USDT_USD = 100_000_000;   // $1.0000
 
+    // Pyth equivalent prices (USD/TOKEN for FX pairs, TOKEN/USD for crypto)
+    // Inversion: TOKEN/USD = 10^16 / pyth_price (both at expo=-8)
+    // USD/MYR: 10^16 / 22680000 = 440917107
+    int64 constant PYTH_USD_MYR  = 440_917_107;
+    // USD/SGD: 10^16 / 74190000 = 134815760
+    int64 constant PYTH_USD_SGD  = 134_815_760;
+    // USD/IDR: USD/IDR = 1/(IDR/USD) = 1/(6170*10^-8) = 10^8/6170 = 16207.46; with expo=-8 → 16207.46*10^8 = 1620745600000
+    int64 constant PYTH_USD_IDR  = 1_620_745_600_000;
+    // USDT/USD = 1.0
+    int64 constant PYTH_USDT_USD = 100_000_000;
+
+    int32 constant FX_EXPO   = -8; // Use -8 for all to match Orakl's 8-decimal format
+    int32 constant CRYPTO_EXPO = -8;
+
     uint256 constant FEE_RATE = 30; // 0.30 %
+    uint256 constant DEVIATION_BPS = 300; // 3 %
 
     // ── Actors ─────────────────────────────────────────────────────────────────
     address owner = makeAddr("owner");
@@ -40,10 +56,25 @@ contract FXEngineTest is Test {
     USDTToken usdt;
 
     // ── Mock feeds (Orakl v0.2 interface) ────────────────────────────────────
-    MockOraklFeed myrFeed;
-    MockOraklFeed sgdFeed;
-    MockOraklFeed idrxFeed;
-    MockOraklFeed usdtFeed;
+    MockOraklFeed myrOraklFeed;
+    MockOraklFeed sgdOraklFeed;
+    MockOraklFeed idrxOraklFeed;
+    MockOraklFeed usdtOraklFeed;
+
+    // ── Mock Pyth ──────────────────────────────────────────────────────────────
+    MockPyth pyth;
+
+    // Pyth price feed IDs (dummy for testing)
+    bytes32 constant PYTH_MYR_ID  = bytes32(uint256(1));
+    bytes32 constant PYTH_SGD_ID  = bytes32(uint256(2));
+    bytes32 constant PYTH_IDR_ID  = bytes32(uint256(3));
+    bytes32 constant PYTH_USDT_ID = bytes32(uint256(4));
+
+    // ── Oracle Aggregators ─────────────────────────────────────────────────────
+    OracleAggregator myrOracle;
+    OracleAggregator sgdOracle;
+    OracleAggregator idrxOracle;
+    OracleAggregator usdtOracle;
 
     // ── Pools & engine ─────────────────────────────────────────────────────────
     FXPool   myrPool;
@@ -68,20 +99,43 @@ contract FXEngineTest is Test {
         idrx = new IDRXToken(owner);
         usdt = new USDTToken(owner);
 
-        // Mock feeds (Orakl v0.2: 3-value latestRoundData)
-        myrFeed  = new MockOraklFeed(8, MYR_USD);
-        sgdFeed  = new MockOraklFeed(8, SGD_USD);
-        idrxFeed = new MockOraklFeed(8, IDRX_USD);
-        usdtFeed = new MockOraklFeed(8, USDT_USD);
+        // Mock Orakl feeds
+        myrOraklFeed  = new MockOraklFeed(8, MYR_USD);
+        sgdOraklFeed  = new MockOraklFeed(8, SGD_USD);
+        idrxOraklFeed = new MockOraklFeed(8, IDRX_USD);
+        usdtOraklFeed = new MockOraklFeed(8, USDT_USD);
 
-        // Pools
-        myrPool  = new FXPool(address(myr),  address(myrFeed),  "Wrapped MYR",  "wMYR",  FEE_RATE, owner);
-        sgdPool  = new FXPool(address(sgd),  address(sgdFeed),  "Wrapped SGD",  "wSGD",  FEE_RATE, owner);
-        idrxPool = new FXPool(address(idrx), address(idrxFeed), "Wrapped IDRX", "wIDRX", FEE_RATE, owner);
-        usdtPool = new FXPool(address(usdt), address(usdtFeed), "Wrapped USDT", "wUSDT", FEE_RATE, owner);
+        // Mock Pyth
+        pyth = new MockPyth(60, 0); // 60s valid time, 0 fee
 
-        // Engine
-        engine = new FXEngine(owner);
+        // Seed Pyth prices
+        _seedPythPrice(PYTH_MYR_ID,  PYTH_USD_MYR,  FX_EXPO);
+        _seedPythPrice(PYTH_SGD_ID,  PYTH_USD_SGD,  FX_EXPO);
+        _seedPythPrice(PYTH_IDR_ID,  PYTH_USD_IDR,  FX_EXPO);
+        _seedPythPrice(PYTH_USDT_ID, PYTH_USDT_USD, CRYPTO_EXPO);
+
+        // Oracle Aggregators
+        myrOracle  = new OracleAggregator(
+            address(myrOraklFeed), address(pyth), PYTH_MYR_ID, true, DEVIATION_BPS, owner
+        );
+        sgdOracle  = new OracleAggregator(
+            address(sgdOraklFeed), address(pyth), PYTH_SGD_ID, true, DEVIATION_BPS, owner
+        );
+        idrxOracle = new OracleAggregator(
+            address(idrxOraklFeed), address(pyth), PYTH_IDR_ID, true, DEVIATION_BPS, owner
+        );
+        usdtOracle = new OracleAggregator(
+            address(usdtOraklFeed), address(pyth), PYTH_USDT_ID, false, DEVIATION_BPS, owner
+        );
+
+        // Pools (now take oracle aggregator address, not raw price feed)
+        myrPool  = new FXPool(address(myr),  address(myrOracle),  "Wrapped MYR",  "wMYR",  FEE_RATE, owner);
+        sgdPool  = new FXPool(address(sgd),  address(sgdOracle),  "Wrapped SGD",  "wSGD",  FEE_RATE, owner);
+        idrxPool = new FXPool(address(idrx), address(idrxOracle), "Wrapped IDRX", "wIDRX", FEE_RATE, owner);
+        usdtPool = new FXPool(address(usdt), address(usdtOracle), "Wrapped USDT", "wUSDT", FEE_RATE, owner);
+
+        // Engine (now requires pyth address)
+        engine = new FXEngine(owner, address(pyth));
         engine.registerPool(address(myr),  address(myrPool));
         engine.registerPool(address(sgd),  address(sgdPool));
         engine.registerPool(address(idrx), address(idrxPool));
@@ -119,6 +173,16 @@ contract FXEngineTest is Test {
         vm.stopPrank();
     }
 
+    // ── Helper: seed a Pyth price via MockPyth ─────────────────────────────────
+    function _seedPythPrice(bytes32 id, int64 price, int32 expo) internal {
+        bytes memory data = pyth.createPriceFeedUpdateData(
+            id, price, 1000, expo, price, 1000, uint64(block.timestamp)
+        );
+        bytes[] memory updateData = new bytes[](1);
+        updateData[0] = data;
+        pyth.updatePriceFeeds{value: 0}(updateData);
+    }
+
     // =========================================================================
     // Deployment sanity
     // =========================================================================
@@ -144,28 +208,65 @@ contract FXEngineTest is Test {
     }
 
     // =========================================================================
-    // Price feed
+    // Oracle Aggregator
     // =========================================================================
 
     function test_GetPrice_MYR() public view {
         (int256 price, uint8 dec) = myrPool.getPrice();
-        assertEq(price, MYR_USD);
+        // Price should be close to Orakl's value (within 3% deviation)
+        assertApproxEqAbs(uint256(price), uint256(MYR_USD), uint256(MYR_USD) / 33);
         assertEq(dec, 8);
     }
 
     function test_GetPrice_IDRX() public view {
         (int256 price,) = idrxPool.getPrice();
-        assertEq(price, IDRX_USD);
+        assertApproxEqAbs(uint256(price), uint256(IDRX_USD), uint256(IDRX_USD) / 33);
+    }
+
+    function test_OracleAggregator_OraklFallback() public {
+        // Corrupt Pyth price to be way off — aggregator should still use Orakl
+        // (cross-validation would revert, but Orakl alone should work if we disable cross-val)
+        vm.prank(owner);
+        myrOracle.setCrossValidation(false);
+
+        (int256 price, uint8 dec) = myrPool.getPrice();
+        assertEq(price, MYR_USD);
+        assertEq(dec, 8);
+    }
+
+    function test_OracleAggregator_PythFallback() public {
+        // Break Orakl by setting answer to 0 (invalid)
+        myrOraklFeed.updateAnswer(0);
+
+        // Disable cross-validation so it falls back to Pyth alone
+        vm.prank(owner);
+        myrOracle.setCrossValidation(false);
+
+        // Now getPrice should use Pyth (inverted USD/MYR -> MYR/USD)
+        (int256 price,) = myrPool.getPrice();
+        // Inverted: 10^16 / PYTH_USD_MYR = 10^16 / 4_409_171_00
+        // Should be close to the Orakl price
+        assertApproxEqAbs(uint256(price), uint256(MYR_USD), uint256(MYR_USD) / 10); // ~10% tolerance for inversion rounding
+    }
+
+    function test_OracleAggregator_BothDown_Reverts() public {
+        // Break Orakl
+        myrOraklFeed.updateAnswer(0);
+
+        vm.prank(owner);
+        myrOracle.setCrossValidation(false);
+
+        // Warp time so Pyth price becomes stale (older than 120s)
+        vm.warp(block.timestamp + 200);
+
+        vm.expectRevert("OA: both oracles down");
+        myrPool.getPrice();
     }
 
     // =========================================================================
     // Quote calculation
     // =========================================================================
 
-    /// @dev  100 MYR → SGD
-    ///       grossOut = 100e18 × 22_680_000 / 74_190_000 ≈ 30.567 SGD
-    ///       fee      = 30.567 × 30 / 10_000            ≈  0.092 SGD
-    ///       netOut   ≈ 30.475 SGD
     function test_GetQuote_MYRtoSGD() public view {
         uint256 amountIn = 100 ether;
         uint256 quote = engine.getQuote(address(myr), address(sgd), amountIn);
@@ -175,13 +276,10 @@ contract FXEngineTest is Test {
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
-        // Rough sanity: 100 MYR ≈ 30–31 SGD
         assertGt(quote, 30 ether);
         assertLt(quote, 31 ether);
     }
 
-    /// @dev  100 USDT → IDRX
-    ///       100 USD / $0.0000617 per IDRX ≈ 1_620_745 IDRX
     function test_GetQuote_USDTtoIDRX() public view {
         uint256 amountIn = 100 ether;
         uint256 quote = engine.getQuote(address(usdt), address(idrx), amountIn);
@@ -191,7 +289,6 @@ contract FXEngineTest is Test {
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
-        // Sanity: 100 USDT ≈ 1_600_000 – 1_700_000 IDRX
         assertGt(quote, 1_600_000 ether);
         assertLt(quote, 1_700_000 ether);
     }
@@ -200,7 +297,6 @@ contract FXEngineTest is Test {
         uint256 amountIn = 1_000_000 ether;
         uint256 quote = engine.getQuote(address(idrx), address(usdt), amountIn);
 
-        // 1_000_000 IDR × $0.0000617 ≈ $61.7 USDT
         assertGt(quote, 60 ether);
         assertLt(quote, 63 ether);
     }
@@ -238,7 +334,6 @@ contract FXEngineTest is Test {
         uint256 out = engine.swap(address(sgd), address(myr), amountIn, 0, bob);
         vm.stopPrank();
 
-        // Rough sanity: 305 SGD ≈ 1 000 MYR (after fee)
         assertGt(out, 950 ether);
         assertLt(out, 1100 ether);
     }
@@ -251,7 +346,6 @@ contract FXEngineTest is Test {
         uint256 out = engine.swap(address(usdt), address(idrx), amountIn, 0, bob);
         vm.stopPrank();
 
-        // 10 USDT → ~162_000 IDRX
         assertGt(out, 160_000 ether);
         assertLt(out, 170_000 ether);
     }
@@ -264,7 +358,6 @@ contract FXEngineTest is Test {
         uint256 out = engine.swap(address(usdt), address(sgd), amountIn, 0, bob);
         vm.stopPrank();
 
-        // 1 000 USD → ~1 348 SGD
         assertGt(out, 1_300 ether);
         assertLt(out, 1_400 ether);
     }
@@ -441,7 +534,7 @@ contract FXEngineTest is Test {
         assertEq(lpToken, myrPool.lpToken());
         assertEq(balance, MYR_SEED);
         assertEq(fee,     FEE_RATE);
-        assertEq(price,   MYR_USD);
+        assertApproxEqAbs(uint256(price), uint256(MYR_USD), uint256(MYR_USD) / 33);
         assertEq(dec, 8);
     }
 }

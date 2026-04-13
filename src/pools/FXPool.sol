@@ -5,13 +5,13 @@ import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
-import "../interfaces/IOraklFeed.sol";
 import "../interfaces/IFXPool.sol";
+import "../oracles/OracleAggregator.sol";
 import "./LPToken.sol";
 
 /**
  @title FXPool
- @notice Single-sided liquidity pool for one stablecoin, priced via Orakl Network.
+ @notice Single-sided liquidity pool for one stablecoin, priced via dual-oracle aggregator.
 */
 contract FXPool is IFXPool, ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
@@ -21,15 +21,14 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
 
     IERC20 private immutable _stablecoin;
     LPToken private immutable _lpToken;
-    IOraklFeed private immutable _priceFeed;
-    uint8 private immutable _feedDecimals;
+    OracleAggregator private immutable _oracle;
 
     address public fxEngine;
     uint256 public override feeRate;
 
     /**
     @param stablecoin_  Underlying ERC-20 stablecoin.
-    @param priceFeed_   Orakl Network aggregator proxy address (token/USD).
+    @param oracle_      OracleAggregator address (dual Orakl + Pyth).
     @param lpName_      LP token name.
     @param lpSymbol_    LP token symbol.
     @param feeRate_     Initial fee (bps, e.g. 30 = 0.30%).
@@ -37,19 +36,18 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
     */
     constructor(
         address stablecoin_,
-        address priceFeed_,
+        address oracle_,
         string memory lpName_,
         string memory lpSymbol_,
         uint256 feeRate_,
         address owner_
     ) Ownable(owner_) {
         require(stablecoin_ != address(0), "FXPool: zero stablecoin");
-        require(priceFeed_ != address(0), "FXPool: zero priceFeed");
+        require(oracle_ != address(0), "FXPool: zero oracle");
         require(feeRate_ <= MAX_FEE_RATE, "FXPool: fee too high");
 
         _stablecoin = IERC20(stablecoin_);
-        _priceFeed = IOraklFeed(priceFeed_);
-        _feedDecimals = IOraklFeed(priceFeed_).decimals();
+        _oracle = OracleAggregator(oracle_);
         feeRate = feeRate_;
 
         _lpToken = new LPToken(lpName_, lpSymbol_, address(this));
@@ -108,11 +106,9 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
 
     // Views
 
-    /// @notice Latest USD price from the Orakl feed, plus the feed's decimal precision.
+    /// @notice Latest USD price from the dual-oracle aggregator.
     function getPrice() external view override returns (int256 price, uint8 decimals_) {
-        (, price,) = _priceFeed.latestRoundData();
-        require(price > 0, "FXPool: invalid price");
-        decimals_ = _feedDecimals;
+        (price, decimals_) = _oracle.getPrice();
     }
 
     function getPoolBalance() external view override returns (uint256) {
@@ -125,6 +121,10 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
 
     function stablecoin() external view override returns (address) {
         return address(_stablecoin);
+    }
+
+    function oracle() external view returns (address) {
+        return address(_oracle);
     }
 
     function lpToStablecoinRate() external view returns (uint256) {

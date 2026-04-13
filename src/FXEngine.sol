@@ -233,7 +233,8 @@ contract FXEngine is ReentrancyGuard, Ownable {
             address pool,
             address lpToken,
             uint256 balance,
-            uint256 fee,
+            uint256 baseFee,
+            uint256 maxFee,
             int256 price,
             uint8 priceDecimals
         )
@@ -243,7 +244,8 @@ contract FXEngine is ReentrancyGuard, Ownable {
         pool = address(p);
         lpToken = p.lpToken();
         balance = p.getPoolBalance();
-        fee = p.feeRate();
+        baseFee = p.feeRate();
+        maxFee = p.maxDynamicFeeRate();
         (price, priceDecimals) = p.getPrice();
     }
 
@@ -290,8 +292,9 @@ contract FXEngine is ReentrancyGuard, Ownable {
             grossOut = (amountIn * uPriceIn * 10 ** (decOut - decIn)) / uPriceOut;
         }
 
-        // Deduct the outPool's fee; remainder stays in pool (LP reward)
-        uint256 fee = (grossOut * poolOut.feeRate()) / FEE_DENOMINATOR;
+        // Deduct the outPool's dynamic fee; remainder stays in pool (LP reward)
+        uint256 effectiveFeeRate = poolOut.getEffectiveFeeRate(grossOut);
+        uint256 fee = (grossOut * effectiveFeeRate) / FEE_DENOMINATOR;
         amountOut = grossOut - fee;
     }
 }

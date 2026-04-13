@@ -23,7 +23,7 @@ import { Separator }     from "@/components/ui/separator";
 import { Skeleton }      from "@/components/ui/skeleton";
 import { TokenSelector } from "@/components/TokenSelector";
 import { getSwapQuote }  from "@/app/actions/quote";
-import { TOKENS, TOKEN_ADDRESSES, FXENGINE_ADDRESS, FXENGINE_ABI, ERC20_ABI } from "@/lib/contracts";
+import { TOKENS, TOKEN_ADDRESSES, POOL_ADDRESSES, FXENGINE_ADDRESS, FXENGINE_ABI, ERC20_ABI, FXPOOL_ABI } from "@/lib/contracts";
 import { useRouter } from "next/navigation";
 import { formatAmount }  from "@/lib/utils";
 import type { TokenSymbol } from "@/lib/contracts";
@@ -45,6 +45,7 @@ export function SwapCard() {
 
   const tokenInAddr  = TOKEN_ADDRESSES[tokenIn  as keyof typeof TOKEN_ADDRESSES];
   const tokenOutAddr = TOKEN_ADDRESSES[tokenOut as keyof typeof TOKEN_ADDRESSES];
+  const poolOutAddr = POOL_ADDRESSES[tokenOut as keyof typeof POOL_ADDRESSES];
 
   // ── Read allowance ──────────────────────────────────────────────────────────
   const { data: allowance = 0n, refetch: refetchAllowance } = useReadContract({
@@ -63,6 +64,18 @@ export function SwapCard() {
     args:         address ? [address] : undefined,
     query:        { enabled: !!address },
   });
+
+  // ── Read effective fee rate for current quote ─────────────────────────────────
+  const { data: effectiveFeeBps } = useReadContract({
+    address:      poolOutAddr,
+    abi:          FXPOOL_ABI,
+    functionName: "getEffectiveFeeRate",
+    args:         quoteRaw > 0n ? [quoteRaw] : undefined,
+    query:        { enabled: quoteRaw > 0n },
+  });
+  const feeDisplay = effectiveFeeBps != null
+    ? `${(Number(effectiveFeeBps) / 100).toFixed(2)}%`
+    : null;
 
   // ── Write: approve ──────────────────────────────────────────────────────────
   const {
@@ -290,7 +303,7 @@ export function SwapCard() {
             </div>
             <div className="flex justify-between">
               <span>Fee</span>
-              <span className="text-kaia-text">0.30%</span>
+              <span className="text-kaia-text">{feeDisplay ?? "—"}</span>
             </div>
           </div>
         )}

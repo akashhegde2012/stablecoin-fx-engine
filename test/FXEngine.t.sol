@@ -41,8 +41,10 @@ contract FXEngineTest is Test {
     int32 constant FX_EXPO   = -8; // Use -8 for all to match Orakl's 8-decimal format
     int32 constant CRYPTO_EXPO = -8;
 
-    uint256 constant FEE_RATE = 30; // 0.30 %
-    uint256 constant DEVIATION_BPS = 300; // 3 %
+    uint256 constant BASE_FEE_RATE = 10;       // 0.10% base fee (bps)
+    uint256 constant UTILIZATION_FACTOR = 2000; // scaling factor (bps)
+    uint256 constant MAX_DYNAMIC_FEE = 300;     // 3.00% cap (bps)
+    uint256 constant DEVIATION_BPS = 300;       // 3 %
 
     // ── Actors ─────────────────────────────────────────────────────────────────
     address owner = makeAddr("owner");
@@ -128,11 +130,11 @@ contract FXEngineTest is Test {
             address(usdtOraklFeed), address(pyth), PYTH_USDT_ID, false, DEVIATION_BPS, owner
         );
 
-        // Pools (now take oracle aggregator address, not raw price feed)
-        myrPool  = new FXPool(address(myr),  address(myrOracle),  "Wrapped MYR",  "wMYR",  FEE_RATE, owner);
-        sgdPool  = new FXPool(address(sgd),  address(sgdOracle),  "Wrapped SGD",  "wSGD",  FEE_RATE, owner);
-        idrxPool = new FXPool(address(idrx), address(idrxOracle), "Wrapped IDRX", "wIDRX", FEE_RATE, owner);
-        usdtPool = new FXPool(address(usdt), address(usdtOracle), "Wrapped USDT", "wUSDT", FEE_RATE, owner);
+        // Pools (now take oracle aggregator + dynamic fee params)
+        myrPool  = new FXPool(address(myr),  address(myrOracle),  "Wrapped MYR",  "wMYR",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, owner);
+        sgdPool  = new FXPool(address(sgd),  address(sgdOracle),  "Wrapped SGD",  "wSGD",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, owner);
+        idrxPool = new FXPool(address(idrx), address(idrxOracle), "Wrapped IDRX", "wIDRX", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, owner);
+        usdtPool = new FXPool(address(usdt), address(usdtOracle), "Wrapped USDT", "wUSDT", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, owner);
 
         // Engine (now requires pyth address)
         engine = new FXEngine(owner, address(pyth));
@@ -272,10 +274,13 @@ contract FXEngineTest is Test {
         uint256 quote = engine.getQuote(address(myr), address(sgd), amountIn);
 
         uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
-        uint256 fee      = (grossOut * FEE_RATE) / 10_000;
+        // Dynamic fee: get effective rate from SGD pool
+        uint256 effectiveRate = sgdPool.getEffectiveFeeRate(grossOut);
+        uint256 fee      = (grossOut * effectiveRate) / 10_000;
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
+        // With low utilization (100 MYR vs 305k SGD pool), fee is near base
         assertGt(quote, 30 ether);
         assertLt(quote, 31 ether);
     }
@@ -285,7 +290,8 @@ contract FXEngineTest is Test {
         uint256 quote = engine.getQuote(address(usdt), address(idrx), amountIn);
 
         uint256 grossOut = (amountIn * uint256(USDT_USD)) / uint256(IDRX_USD);
-        uint256 fee      = (grossOut * FEE_RATE) / 10_000;
+        uint256 effectiveRate = idrxPool.getEffectiveFeeRate(grossOut);
+        uint256 fee      = (grossOut * effectiveRate) / 10_000;
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
@@ -435,7 +441,8 @@ contract FXEngineTest is Test {
         vm.stopPrank();
 
         uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
-        uint256 fee      = (grossOut * FEE_RATE) / 10_000;
+        uint256 effectiveRate = sgdP.getEffectiveFeeRate(grossOut);
+        uint256 fee      = (grossOut * effectiveRate) / 10_000;
 
         uint256 balanceAfter = sgdP.getPoolBalance();
         assertEq(balanceAfter, balanceBefore - netOut);
@@ -450,6 +457,7 @@ contract FXEngineTest is Test {
         assertGt(fee, 0);
 
         console.log("Fee earned by sgdPool LPs:", fee);
+        console.log("Effective fee rate (bps):", effectiveRate);
         console.log("wSGD rate before (e18):", rateBefore);
         console.log("wSGD rate after  (e18):", rateAfter);
     }
@@ -458,16 +466,28 @@ contract FXEngineTest is Test {
     // Pool admin
     // =========================================================================
 
-    function test_SetFeeRate() public {
+    function test_SetBaseFeeRate() public {
         vm.prank(owner);
-        myrPool.setFeeRate(50);
-        assertEq(myrPool.feeRate(), 50);
+        myrPool.setBaseFeeRate(20);
+        assertEq(myrPool.feeRate(), 20);
     }
 
-    function test_SetFeeRate_RevertOverMax() public {
+    function test_SetBaseFeeRate_RevertOverMax() public {
         vm.prank(owner);
-        vm.expectRevert("FXPool: fee too high");
-        myrPool.setFeeRate(1_001);
+        vm.expectRevert("FXPool: base > max");
+        myrPool.setBaseFeeRate(301); // > maxDynamicFeeRate
+    }
+
+    function test_SetUtilizationFactor() public {
+        vm.prank(owner);
+        myrPool.setUtilizationFactor(3000);
+        assertEq(myrPool.utilizationFactor(), 3000);
+    }
+
+    function test_SetMaxDynamicFeeRate() public {
+        vm.prank(owner);
+        myrPool.setMaxDynamicFeeRate(500);
+        assertEq(myrPool.maxDynamicFeeRate(), 500);
     }
 
     function test_RemovePool() public {
@@ -528,13 +548,70 @@ contract FXEngineTest is Test {
     }
 
     function test_GetPoolInfo() public view {
-        (address pool, address lpToken, uint256 balance, uint256 fee, int256 price, uint8 dec)
+        (address pool, address lpToken, uint256 balance, uint256 baseFee, uint256 maxFee, int256 price, uint8 dec)
             = engine.getPoolInfo(address(myr));
         assertEq(pool,    address(myrPool));
         assertEq(lpToken, myrPool.lpToken());
         assertEq(balance, MYR_SEED);
-        assertEq(fee,     FEE_RATE);
+        assertEq(baseFee, BASE_FEE_RATE);
+        assertEq(maxFee,  MAX_DYNAMIC_FEE);
         assertApproxEqAbs(uint256(price), uint256(MYR_USD), uint256(MYR_USD) / 33);
         assertEq(dec, 8);
+    }
+
+    // =========================================================================
+    // Dynamic fee tests
+    // =========================================================================
+
+    function test_DynamicFee_SmallTrade_NearBase() public view {
+        // 100 MYR → SGD: grossOut ≈ 30.57 SGD, pool has 305_662 SGD → utilization ~0.01%
+        uint256 grossOut = (100 ether * uint256(MYR_USD)) / uint256(SGD_USD);
+        uint256 rate = sgdPool.getEffectiveFeeRate(grossOut);
+        // Should be very close to base fee (10 bps)
+        assertEq(rate, BASE_FEE_RATE);
+    }
+
+    function test_DynamicFee_LargeTrade_HigherFee() public view {
+        // Simulate large trade: 100k MYR → SGD, grossOut ≈ 30_567 SGD
+        // Pool has 305_662 SGD → utilization ~10%
+        uint256 grossOut = (100_000 ether * uint256(MYR_USD)) / uint256(SGD_USD);
+        uint256 rate = sgdPool.getEffectiveFeeRate(grossOut);
+        // Should be significantly above base fee
+        assertGt(rate, BASE_FEE_RATE);
+        // utilization = 30567 * 10000 / 305662 ≈ 999 bps
+        // feeRate = 10 + (999 * 2000 / 10000) = 10 + 199 = 209 bps
+        assertGt(rate, 100);
+        assertLe(rate, MAX_DYNAMIC_FEE);
+    }
+
+    function test_DynamicFee_HugeTrade_Capped() public view {
+        // Very large trade that would exceed max fee
+        uint256 poolBal = sgdPool.getPoolBalance();
+        uint256 grossOut = poolBal / 2; // 50% of pool
+        uint256 rate = sgdPool.getEffectiveFeeRate(grossOut);
+        // Must be capped at MAX_DYNAMIC_FEE
+        assertEq(rate, MAX_DYNAMIC_FEE);
+    }
+
+    function test_DynamicFee_SwapIntegratesDynamicFee() public {
+        // Verify that actual swap uses dynamic fee
+        uint256 amountIn = 10_000 ether;
+        vm.prank(owner);
+        myr.mint(bob, amountIn);
+
+        uint256 quoteBefore = engine.getQuote(address(myr), address(sgd), amountIn);
+
+        vm.startPrank(bob);
+        myr.approve(address(engine), amountIn);
+        uint256 actualOut = engine.swap(address(myr), address(sgd), amountIn, quoteBefore, bob);
+        vm.stopPrank();
+
+        assertEq(actualOut, quoteBefore);
+
+        // The fee should be higher than base fee for this size
+        uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
+        uint256 effectiveRate = sgdPool.getEffectiveFeeRate(grossOut);
+        assertGt(effectiveRate, BASE_FEE_RATE);
+        console.log("10k MYR swap - effective fee rate (bps):", effectiveRate);
     }
 }

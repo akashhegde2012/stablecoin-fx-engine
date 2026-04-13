@@ -12,43 +12,56 @@ import "./LPToken.sol";
 /**
  @title FXPool
  @notice Single-sided liquidity pool for one stablecoin, priced via dual-oracle aggregator.
+         Utilization-based dynamic fees: small trades pay base fee, large trades pay more.
 */
 contract FXPool is IFXPool, ReentrancyGuard, Ownable {
     using SafeERC20 for IERC20;
 
     uint256 public constant FEE_DENOMINATOR = 10_000;
-    uint256 public constant MAX_FEE_RATE = 1_000; // 10%
+    uint256 public constant MAX_FEE_RATE = 1_000; // 10% absolute cap
 
     IERC20 private immutable _stablecoin;
     LPToken private immutable _lpToken;
     OracleAggregator private immutable _oracle;
 
     address public fxEngine;
-    uint256 public override feeRate;
+
+    // ── Dynamic fee parameters ─────────────────────────────────────────────────
+    uint256 public override feeRate;             // base fee (bps), e.g. 10 = 0.10%
+    uint256 public utilizationFactor;            // scaling factor (bps), e.g. 2000
+    uint256 public maxDynamicFeeRate;            // cap (bps), e.g. 300 = 3.00%
 
     /**
-    @param stablecoin_  Underlying ERC-20 stablecoin.
-    @param oracle_      OracleAggregator address (dual Orakl + Pyth).
-    @param lpName_      LP token name.
-    @param lpSymbol_    LP token symbol.
-    @param feeRate_     Initial fee (bps, e.g. 30 = 0.30%).
-    @param owner_       Pool owner.
+    @param stablecoin_        Underlying ERC-20 stablecoin.
+    @param oracle_            OracleAggregator address (dual Orakl + Pyth).
+    @param lpName_            LP token name.
+    @param lpSymbol_          LP token symbol.
+    @param baseFeeRate_       Base fee (bps, e.g. 10 = 0.10%).
+    @param utilizationFactor_ Utilization scaling factor (bps, e.g. 2000).
+    @param maxDynamicFeeRate_ Maximum dynamic fee cap (bps, e.g. 300 = 3%).
+    @param owner_             Pool owner.
     */
     constructor(
         address stablecoin_,
         address oracle_,
         string memory lpName_,
         string memory lpSymbol_,
-        uint256 feeRate_,
+        uint256 baseFeeRate_,
+        uint256 utilizationFactor_,
+        uint256 maxDynamicFeeRate_,
         address owner_
     ) Ownable(owner_) {
         require(stablecoin_ != address(0), "FXPool: zero stablecoin");
         require(oracle_ != address(0), "FXPool: zero oracle");
-        require(feeRate_ <= MAX_FEE_RATE, "FXPool: fee too high");
+        require(baseFeeRate_ <= MAX_FEE_RATE, "FXPool: base fee too high");
+        require(maxDynamicFeeRate_ <= MAX_FEE_RATE, "FXPool: max fee too high");
+        require(baseFeeRate_ <= maxDynamicFeeRate_, "FXPool: base > max");
 
         _stablecoin = IERC20(stablecoin_);
         _oracle = OracleAggregator(oracle_);
-        feeRate = feeRate_;
+        feeRate = baseFeeRate_;
+        utilizationFactor = utilizationFactor_;
+        maxDynamicFeeRate = maxDynamicFeeRate_;
 
         _lpToken = new LPToken(lpName_, lpSymbol_, address(this));
     }
@@ -104,7 +117,9 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         emit Released(amount, to);
     }
 
+    // -------------------------------------------------------------------------
     // Views
+    // -------------------------------------------------------------------------
 
     /// @notice Latest USD price from the dual-oracle aggregator.
     function getPrice() external view override returns (int256 price, uint8 decimals_) {
@@ -133,7 +148,33 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         return (_stablecoin.balanceOf(address(this)) * 1e18) / totalLp;
     }
 
+    /**
+     * @notice Compute the dynamic fee rate for a given trade size.
+     *         Formula: feeRate = baseFee + (grossOut / poolBalance * utilizationFactor)
+     *         Capped at maxDynamicFeeRate.
+     * @param grossOutAmount  Gross output amount of the swap (before fees).
+     * @return effectiveFeeRate  Fee rate in bps.
+     */
+    function getEffectiveFeeRate(uint256 grossOutAmount) external view override returns (uint256) {
+        uint256 poolBal = _stablecoin.balanceOf(address(this));
+        if (poolBal == 0) return maxDynamicFeeRate;
+
+        // utilization = grossOut / poolBalance (scaled by FEE_DENOMINATOR for precision)
+        uint256 utilization = (grossOutAmount * FEE_DENOMINATOR) / poolBal;
+
+        // dynamicFee = baseFee + (utilization * utilizationFactor / FEE_DENOMINATOR)
+        uint256 dynamicFee = feeRate + ((utilization * utilizationFactor) / FEE_DENOMINATOR);
+
+        // Cap at maxDynamicFeeRate
+        if (dynamicFee > maxDynamicFeeRate) {
+            return maxDynamicFeeRate;
+        }
+        return dynamicFee;
+    }
+
+    // -------------------------------------------------------------------------
     // Owner admin
+    // -------------------------------------------------------------------------
 
     function setFXEngine(address engine_) external onlyOwner {
         require(engine_ != address(0), "FXPool: zero engine");
@@ -141,9 +182,21 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         fxEngine = engine_;
     }
 
-    function setFeeRate(uint256 feeRate_) external onlyOwner {
-        require(feeRate_ <= MAX_FEE_RATE, "FXPool: fee too high");
-        emit FeeRateUpdated(feeRate, feeRate_);
-        feeRate = feeRate_;
+    function setBaseFeeRate(uint256 baseFeeRate_) external onlyOwner {
+        require(baseFeeRate_ <= maxDynamicFeeRate, "FXPool: base > max");
+        emit BaseFeeRateUpdated(feeRate, baseFeeRate_);
+        feeRate = baseFeeRate_;
+    }
+
+    function setUtilizationFactor(uint256 factor_) external onlyOwner {
+        emit UtilizationFactorUpdated(utilizationFactor, factor_);
+        utilizationFactor = factor_;
+    }
+
+    function setMaxDynamicFeeRate(uint256 maxFeeRate_) external onlyOwner {
+        require(maxFeeRate_ <= MAX_FEE_RATE, "FXPool: max fee too high");
+        require(feeRate <= maxFeeRate_, "FXPool: base > new max");
+        emit MaxDynamicFeeRateUpdated(maxDynamicFeeRate, maxFeeRate_);
+        maxDynamicFeeRate = maxFeeRate_;
     }
 }

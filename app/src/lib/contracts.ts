@@ -65,7 +65,8 @@ export const FXENGINE_ABI = [
       { name: "pool",          type: "address" },
       { name: "lpToken",       type: "address" },
       { name: "balance",       type: "uint256" },
-      { name: "fee",           type: "uint256" },
+      { name: "baseFee",       type: "uint256" },
+      { name: "maxFee",        type: "uint256" },
       { name: "price",         type: "int256"  },
       { name: "priceDecimals", type: "uint8"   },
     ],
@@ -200,6 +201,13 @@ export const FXPOOL_ABI = [
     type: "function",
     stateMutability: "view",
     inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "getEffectiveFeeRate",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "grossOutAmount", type: "uint256" }],
     outputs: [{ name: "", type: "uint256" }],
   },
   {

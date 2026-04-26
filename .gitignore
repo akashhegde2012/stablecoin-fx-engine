@@ -2,14 +2,18 @@
 cache/
 out/
 
-# Ignores development broadcast logs
-!/broadcast
+# Broadcast logs — keep testnet, ignore local & dry-runs
 /broadcast/*/31337/
 /broadcast/**/dry-run/
 
 # Docs
 docs/
 
-# Dotenv file
+# Dotenv files
 .env
-broadcast/
+.env.local
+.env.*.local
+
+# Next.js build output
+.next/
+app/.next/

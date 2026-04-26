@@ -9,7 +9,12 @@ interface IFXPool {
     event Deposited(address indexed user, uint256 amount, uint256 lpMinted);
     event Withdrawn(address indexed user, uint256 lpBurned, uint256 amount);
     event Released(uint256 amount, address indexed to);
-    event FeeRateUpdated(uint256 oldRate, uint256 newRate);
+    event PlatformFeeDistributed(uint256 amount, address indexed treasury);
+    event BaseFeeRateUpdated(uint256 oldRate, uint256 newRate);
+    event UtilizationFactorUpdated(uint256 oldFactor, uint256 newFactor);
+    event MaxDynamicFeeRateUpdated(uint256 oldMax, uint256 newMax);
+    event PlatformFeeBpsUpdated(uint256 oldBps, uint256 newBps);
+    event PlatformTreasuryUpdated(address indexed oldTreasury, address indexed newTreasury);
     event EngineUpdated(address indexed oldEngine, address indexed newEngine);
 
     // LP actions
@@ -30,6 +35,10 @@ interface IFXPool {
     ///         Called exclusively by the authorised FXEngine during a swap.
     function release(uint256 amount, address to) external;
 
+    /// @notice Transfer platform fee portion to the treasury address.
+    ///         Called by FXEngine after a swap to distribute the platform's fee share.
+    function releasePlatformFee(uint256 amount) external;
+
     // Views
 
     /// @notice Latest USD price from the Pyth feed, plus the feed's decimal precision.
@@ -38,8 +47,23 @@ interface IFXPool {
     /// @notice Current stablecoin balance held by the pool.
     function getPoolBalance() external view returns (uint256);
 
-    /// @notice Fee rate charged on the gross output amount, in basis points (e.g. 30 = 0.30%).
+    /// @notice Base fee rate in basis points (minimum fee, e.g. 10 = 0.10%).
     function feeRate() external view returns (uint256);
+
+    /// @notice Compute the dynamic fee rate for a given trade size, in basis points.
+    ///         Utilization-based: fee increases with grossOut relative to pool balance.
+    /// @param grossOutAmount  Gross output amount of the swap (before fees).
+    /// @return effectiveFeeRate  Fee rate in bps, capped at maxDynamicFeeRate.
+    function getEffectiveFeeRate(uint256 grossOutAmount) external view returns (uint256);
+
+    /// @notice Maximum dynamic fee rate cap in basis points.
+    function maxDynamicFeeRate() external view returns (uint256);
+
+    /// @notice Platform fee share in basis points of total fee (e.g. 3000 = 30%).
+    function platformFeeBps() external view returns (uint256);
+
+    /// @notice Platform treasury address that receives platform fees.
+    function platformTreasury() external view returns (address);
 
     /// @notice The LP token address for this pool.
     function lpToken() external view returns (address);

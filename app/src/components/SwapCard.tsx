@@ -23,7 +23,7 @@ import { Separator }     from "@/components/ui/separator";
 import { Skeleton }      from "@/components/ui/skeleton";
 import { TokenSelector } from "@/components/TokenSelector";
 import { getSwapQuote }  from "@/app/actions/quote";
-import { TOKENS, TOKEN_ADDRESSES, FXENGINE_ADDRESS, FXENGINE_ABI, ERC20_ABI } from "@/lib/contracts";
+import { TOKENS, TOKEN_ADDRESSES, POOL_ADDRESSES, FXENGINE_ADDRESS, FXENGINE_ABI, ERC20_ABI, FXPOOL_ABI } from "@/lib/contracts";
 import { useRouter } from "next/navigation";
 import { formatAmount }  from "@/lib/utils";
 import type { TokenSymbol } from "@/lib/contracts";
@@ -45,6 +45,7 @@ export function SwapCard() {
 
   const tokenInAddr  = TOKEN_ADDRESSES[tokenIn  as keyof typeof TOKEN_ADDRESSES];
   const tokenOutAddr = TOKEN_ADDRESSES[tokenOut as keyof typeof TOKEN_ADDRESSES];
+  const poolOutAddr = POOL_ADDRESSES[tokenOut as keyof typeof POOL_ADDRESSES];
 
   // ── Read allowance ──────────────────────────────────────────────────────────
   const { data: allowance = 0n, refetch: refetchAllowance } = useReadContract({
@@ -63,6 +64,18 @@ export function SwapCard() {
     args:         address ? [address] : undefined,
     query:        { enabled: !!address },
   });
+
+  // ── Read effective fee rate for current quote ─────────────────────────────────
+  const { data: effectiveFeeBps } = useReadContract({
+    address:      poolOutAddr,
+    abi:          FXPOOL_ABI,
+    functionName: "getEffectiveFeeRate",
+    args:         quoteRaw > 0n ? [quoteRaw] : undefined,
+    query:        { enabled: quoteRaw > 0n },
+  });
+  const feeDisplay = effectiveFeeBps != null
+    ? `${(Number(effectiveFeeBps) / 100).toFixed(2)}%`
+    : null;
 
   // ── Write: approve ──────────────────────────────────────────────────────────
   const {
@@ -164,10 +177,17 @@ export function SwapCard() {
     });
   };
 
-  const handleSwap = () => {
+  const [pythStatus, setPythStatus] = useState<string>("");
+
+  const handleSwap = async () => {
     if (!address || !quoteRaw) return;
-    const amtIn   = parseUnits(amountIn, 18);
-    const minOut  = (quoteRaw * BigInt(Math.floor((1 - parseFloat(slippage) / 100) * 10000))) / 10000n;
+    const amtIn  = parseUnits(amountIn, 18);
+    const minOut = (quoteRaw * BigInt(Math.floor((1 - parseFloat(slippage) / 100) * 10000))) / 10000n;
+
+    // Use swap() directly — Orakl is the primary push oracle and already on-chain.
+    // swapWithPythUpdate() triggers cross-validation between Orakl (testnet mock prices)
+    // and Pyth (real market prices), which fails with "OA: price deviation too high".
+    setPythStatus("");
     swap({
       address:      FXENGINE_ADDRESS,
       abi:          FXENGINE_ABI,
@@ -283,7 +303,7 @@ export function SwapCard() {
             </div>
             <div className="flex justify-between">
               <span>Fee</span>
-              <span className="text-kaia-text">0.30%</span>
+              <span className="text-kaia-text">{feeDisplay ?? "—"}</span>
             </div>
           </div>
         )}
@@ -330,9 +350,9 @@ export function SwapCard() {
             disabled={!isSwapReady || txPending}
           >
             {swapLoading || swapConfirming ? (
-              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> Swapping...</>
+              <><Loader2 className="mr-2 h-4 w-4 animate-spin" /> {pythStatus || "Swapping..."}</>
             ) : (
-              `Swap ${tokenIn} → ${tokenOut}`
+              `Swap ${tokenIn} \u2192 ${tokenOut}`
             )}
           </Button>
         )}

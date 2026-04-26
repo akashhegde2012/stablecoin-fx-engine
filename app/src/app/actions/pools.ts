@@ -13,8 +13,9 @@ export interface PoolInfo {
   lpToken:      string;
   balance:      string;   // formatted, e.g. "100,000.00"
   balanceRaw:   string;
-  feeRate:      string;   // e.g. "0.30%"
+  feeRate:      string;   // e.g. "0.10% - 3.00%"
   feeRateBps:   string;
+  maxFeeBps:    string;
   price:        string;   // e.g. "$0.2268"
   flag:         string;
 }
@@ -30,10 +31,11 @@ export async function getAllPoolsInfo(): Promise<PoolInfo[]> {
           args:    [token.address],
         });
 
-        const [pool, lpToken, balance, fee, price, priceDecimals] = info;
+        const [pool, lpToken, balance, baseFee, maxFee, price, priceDecimals] = info;
 
         const balanceNum = parseFloat(formatUnits(balance, 18));
-        const feeNum     = Number(fee);
+        const baseFeeNum = Number(baseFee);
+        const maxFeeNum  = Number(maxFee);
         const priceNum   = parseFloat(formatUnits(price as bigint, priceDecimals));
 
         return {
@@ -47,8 +49,9 @@ export async function getAllPoolsInfo(): Promise<PoolInfo[]> {
             maximumFractionDigits: 2,
           }),
           balanceRaw:  balance.toString(),
-          feeRate:     `${(feeNum / 100).toFixed(2)}%`,
-          feeRateBps:  fee.toString(),
+          feeRate:     `${(baseFeeNum / 100).toFixed(2)}% - ${(maxFeeNum / 100).toFixed(2)}%`,
+          feeRateBps:  baseFee.toString(),
+          maxFeeBps:   maxFee.toString(),
           price: priceNum.toLocaleString("en-US", {
             style:    "currency",
             currency: "USD",

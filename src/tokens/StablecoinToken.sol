@@ -5,10 +5,10 @@ import "@openzeppelin/contracts/token/ERC20/ERC20.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 
 /**
- @title StablecoinToken
- @notice Base ERC-20 stablecoin with owner-controlled minting.
-         Each currency (MYR, SGD, IDRX, USDT) inherits from this.
-*/
+ * @title StablecoinToken
+ *  @notice Base ERC-20 stablecoin with owner-controlled minting.
+ *          Each currency (MYR, SGD, IDRX, USDT) inherits from this.
+ */
 abstract contract StablecoinToken is ERC20, Ownable {
     uint8 private immutable _decimals;
 

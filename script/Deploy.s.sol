@@ -62,8 +62,8 @@ contract Deploy is Script {
         address deployer = msg.sender;
 
         // 1. Deploy stablecoin tokens
-        MYRToken  myr  = new MYRToken(deployer);
-        SGDToken  sgd  = new SGDToken(deployer);
+        MYRToken myr = new MYRToken(deployer);
+        SGDToken sgd = new SGDToken(deployer);
         IDRXToken idrx = new IDRXToken(deployer);
         USDTToken usdt = new USDTToken(deployer);
 
@@ -100,8 +100,8 @@ contract Deploy is Script {
         FXPool usdtPool = new FXPool(address(usdt), address(usdtOracle), "Wrapped USDT", "wUSDT", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, deployer, deployer);
 
         console.log("\n=== FX Pools ===");
-        console.log("MYR  pool:", address(myrPool),  " lpToken:", myrPool.lpToken());
-        console.log("SGD  pool:", address(sgdPool),  " lpToken:", sgdPool.lpToken());
+        console.log("MYR  pool:", address(myrPool), " lpToken:", myrPool.lpToken());
+        console.log("SGD  pool:", address(sgdPool), " lpToken:", sgdPool.lpToken());
         console.log("IDRX pool:", address(idrxPool), " lpToken:", idrxPool.lpToken());
         console.log("USDT pool:", address(usdtPool), " lpToken:", usdtPool.lpToken());
 
@@ -115,32 +115,36 @@ contract Deploy is Script {
         console.log("\n=== FX Engine ===");
         console.log("FXEngine:", address(engine));
 
-        // 5. Authorise engine in every pool
-        myrPool.setFXEngine(address(engine));
-        sgdPool.setFXEngine(address(engine));
-        idrxPool.setFXEngine(address(engine));
-        usdtPool.setFXEngine(address(engine));
+        // 4. Authorise engine in every pool
+        myrPool.proposeEngine(address(engine));
+        myrPool.acceptEngine();
+        sgdPool.proposeEngine(address(engine));
+        sgdPool.acceptEngine();
+        idrxPool.proposeEngine(address(engine));
+        idrxPool.acceptEngine();
+        usdtPool.proposeEngine(address(engine));
+        usdtPool.acceptEngine();
 
-        // 6. Mint tokens (pool seed + tester allocation)
-        myr.mint(deployer,  MYR_SEED  + TEST_MYR);
-        sgd.mint(deployer,  SGD_SEED  + TEST_SGD);
+        // 5. Mint tokens (pool seed + tester allocation)
+        myr.mint(deployer, MYR_SEED + TEST_MYR);
+        sgd.mint(deployer, SGD_SEED + TEST_SGD);
         idrx.mint(deployer, IDRX_SEED + TEST_IDRX);
         usdt.mint(deployer, USDT_SEED + TEST_USDT);
 
-        // 7. Approve and seed initial liquidity
-        myr.approve(address(myrPool),   MYR_SEED);
-        sgd.approve(address(sgdPool),   SGD_SEED);
+        // 6. Approve and seed initial liquidity
+        myr.approve(address(myrPool), MYR_SEED);
+        sgd.approve(address(sgdPool), SGD_SEED);
         idrx.approve(address(idrxPool), IDRX_SEED);
         usdt.approve(address(usdtPool), USDT_SEED);
 
-        uint256 myrLp  = myrPool.deposit(MYR_SEED);
-        uint256 sgdLp  = sgdPool.deposit(SGD_SEED);
+        uint256 myrLp = myrPool.deposit(MYR_SEED);
+        uint256 sgdLp = sgdPool.deposit(SGD_SEED);
         uint256 idrxLp = idrxPool.deposit(IDRX_SEED);
         uint256 usdtLp = usdtPool.deposit(USDT_SEED);
 
         console.log("\n=== Initial Liquidity Seeded ===");
-        console.log("MYR  pool balance:", myrPool.getPoolBalance(),  " wMYR  minted:", myrLp);
-        console.log("SGD  pool balance:", sgdPool.getPoolBalance(),  " wSGD  minted:", sgdLp);
+        console.log("MYR  pool balance:", myrPool.getPoolBalance(), " wMYR  minted:", myrLp);
+        console.log("SGD  pool balance:", sgdPool.getPoolBalance(), " wSGD  minted:", sgdLp);
         console.log("IDRX pool balance:", idrxPool.getPoolBalance(), " wIDRX minted:", idrxLp);
         console.log("USDT pool balance:", usdtPool.getPoolBalance(), " wUSDT minted:", usdtLp);
 

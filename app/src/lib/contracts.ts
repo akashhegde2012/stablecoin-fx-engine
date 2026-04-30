@@ -19,6 +19,40 @@ export const POOL_ADDRESSES = {
   USDT: process.env.NEXT_PUBLIC_POOL_USDT as Address,
 } as const;
 
+// ─── Oracle Aggregators (hardcoded — deployment-time constants) ─────────────
+// Orakl is the primary push oracle; Pyth is the fallback pull oracle.
+// These addresses come from broadcast/Deploy.s.sol/1001/run-latest.json.
+
+export const ORACLE_ADDRESSES = {
+  MYR:  "0x9dd6cFaDA795eeb5b5af651C86f2201a7BAe1730" as Address,
+  SGD:  "0x7c549bE7f6d57561EcF2b08544841Be653E0A9d8" as Address,
+  IDRX: "0x33530BD6aA8BCB70319339CDe9fEF66CB66fCF9c" as Address,
+  USDT: "0xBd559E47880470e0A6502dFA6c252a815C2A6591" as Address,
+} as const;
+
+export const ORACLE_AGGREGATOR_ABI = [
+  {
+    name: "getOraklPrice",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "price",    type: "int256" },
+      { name: "decimals", type: "uint8"  },
+    ],
+  },
+  {
+    name: "getPythPrice",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [
+      { name: "price",    type: "int256" },
+      { name: "decimals", type: "uint8"  },
+    ],
+  },
+] as const;
+
 // ─── Pyth Network ───────────────────────────────────────────────────────────
 
 export const PYTH_CONTRACT_ADDRESS =
@@ -225,6 +259,34 @@ export const FXPOOL_ABI = [
     outputs: [{ name: "", type: "address" }],
   },
   {
+    name: "platformFeeBps",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "utilizationFactor",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "maxDynamicFeeRate",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "platformTreasury",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "address" }],
+  },
+  {
     name: "Deposited",
     type: "event",
     inputs: [
@@ -240,6 +302,120 @@ export const FXPOOL_ABI = [
       { name: "provider", type: "address", indexed: true  },
       { name: "lpBurned", type: "uint256", indexed: false },
       { name: "amount",   type: "uint256", indexed: false },
+    ],
+  },
+] as const;
+
+// ─── Settlement Engine ───────────────────────────────────────────────────────
+
+export const SETTLEMENT_ENGINE_ADDRESS = (
+  process.env.NEXT_PUBLIC_SETTLEMENT_ENGINE_ADDRESS ?? undefined
+) as Address | undefined;
+
+export const SETTLEMENT_ENGINE_ABI = [
+  // Inherits FXEngine swap/getQuote
+  {
+    name: "getMultiHopQuote",
+    type: "function",
+    stateMutability: "view",
+    inputs: [
+      { name: "path",     type: "address[]" },
+      { name: "amountIn", type: "uint256"   },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
+  {
+    name: "swapMultiHop",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "path",         type: "address[]" },
+      { name: "amountIn",     type: "uint256"   },
+      { name: "minAmountOut", type: "uint256"   },
+      { name: "to",           type: "address"   },
+    ],
+    outputs: [{ name: "amountOut", type: "uint256" }],
+  },
+  {
+    name: "submitIntent",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [
+      { name: "tokenIn",      type: "address" },
+      { name: "tokenOut",     type: "address" },
+      { name: "amountIn",     type: "uint256" },
+      { name: "minAmountOut", type: "uint256" },
+      { name: "deadline",     type: "uint256" },
+    ],
+    outputs: [{ name: "intentId", type: "uint256" }],
+  },
+  {
+    name: "cancelIntent",
+    type: "function",
+    stateMutability: "nonpayable",
+    inputs: [{ name: "intentId", type: "uint256" }],
+    outputs: [],
+  },
+  {
+    name: "getIntent",
+    type: "function",
+    stateMutability: "view",
+    inputs: [{ name: "intentId", type: "uint256" }],
+    outputs: [
+      { name: "trader",       type: "address" },
+      { name: "tokenIn",      type: "address" },
+      { name: "tokenOut",     type: "address" },
+      { name: "amountIn",     type: "uint256" },
+      { name: "minAmountOut", type: "uint256" },
+      { name: "deadline",     type: "uint256" },
+      { name: "settled",      type: "bool"    },
+      { name: "cancelled",    type: "bool"    },
+    ],
+  },
+  {
+    name: "nextIntentId",
+    type: "function",
+    stateMutability: "view",
+    inputs: [],
+    outputs: [{ name: "", type: "uint256" }],
+  },
+  {
+    name: "IntentSubmitted",
+    type: "event",
+    inputs: [
+      { name: "intentId",     type: "uint256", indexed: true  },
+      { name: "trader",       type: "address", indexed: true  },
+      { name: "tokenIn",      type: "address", indexed: false },
+      { name: "tokenOut",     type: "address", indexed: false },
+      { name: "amountIn",     type: "uint256", indexed: false },
+      { name: "minAmountOut", type: "uint256", indexed: false },
+      { name: "deadline",     type: "uint256", indexed: false },
+    ],
+  },
+  {
+    name: "IntentCancelled",
+    type: "event",
+    inputs: [{ name: "intentId", type: "uint256", indexed: true }],
+  },
+  {
+    name: "IntentSettled",
+    type: "event",
+    inputs: [
+      { name: "intentId",  type: "uint256", indexed: true  },
+      { name: "amountOut", type: "uint256", indexed: false },
+    ],
+  },
+  {
+    name: "MultiHopSwapped",
+    type: "event",
+    inputs: [
+      { name: "sender",    type: "address", indexed: true  },
+      { name: "tokenIn",   type: "address", indexed: false },
+      { name: "tokenOut",  type: "address", indexed: false },
+      { name: "amountIn",  type: "uint256", indexed: false },
+      { name: "amountOut", type: "uint256", indexed: false },
+      { name: "hops",      type: "uint256", indexed: false },
+      { name: "to",        type: "address", indexed: false },
     ],
   },
 ] as const;

@@ -1,4 +1,4 @@
-import { TrendingUp, Droplets, Percent } from "lucide-react";
+import { TrendingUp, Droplets, Percent, PieChart, Zap } from "lucide-react";
 import { Card, CardContent } from "@/components/ui/card";
 import { Badge }             from "@/components/ui/badge";
 import { getAllPoolsInfo }   from "@/app/actions/pools";
@@ -37,11 +37,13 @@ export async function PoolsGrid() {
                 </div>
                 <div className="text-right">
                   <p className="text-lg font-bold text-kaia-primary">{pool.price}</p>
-                  <p className="text-xs text-kaia-muted">USD price</p>
+                  <p className="text-xs text-kaia-muted">
+                    {pool.priceSource !== "—" ? `via ${pool.priceSource}` : "price unavailable"}
+                  </p>
                 </div>
               </div>
 
-              {/* Stats */}
+              {/* Stats row 1: liquidity + swap fee */}
               <div className="grid grid-cols-2 gap-3">
                 <div className="rounded-xl border border-kaia-border bg-kaia-surface p-3">
                   <div className="flex items-center gap-1.5 text-xs text-kaia-muted mb-1">
@@ -60,7 +62,44 @@ export async function PoolsGrid() {
                     <span>Swap Fee</span>
                   </div>
                   <p className="text-sm font-semibold text-kaia-primary">{pool.feeRate}</p>
-                  <p className="text-xs text-kaia-muted">earned by LPs</p>
+                  <p className="text-xs text-kaia-muted">dynamic (utilization-based)</p>
+                </div>
+              </div>
+
+              {/* Stats row 2: fee distribution + utilization scaling */}
+              <div className="grid grid-cols-2 gap-3">
+                <div className="rounded-xl border border-kaia-border bg-kaia-surface p-3">
+                  <div className="flex items-center gap-1.5 text-xs text-kaia-muted mb-1">
+                    <PieChart className="h-3.5 w-3.5" />
+                    <span>Fee Split</span>
+                  </div>
+                  <div className="flex items-center gap-1.5 mt-0.5">
+                    {/* LP bar */}
+                    <div
+                      className="h-2 rounded-full bg-kaia-primary"
+                      style={{ width: pool.lpFeePct }}
+                    />
+                    <div
+                      className="h-2 rounded-full bg-kaia-muted/40"
+                      style={{ width: pool.platformFeeLabel }}
+                    />
+                  </div>
+                  <p className="text-xs text-kaia-text mt-1">
+                    <span className="text-kaia-primary font-medium">{pool.lpFeePct} LPs</span>
+                    {" / "}
+                    <span className="text-kaia-muted">{pool.platformFeeLabel} platform</span>
+                  </p>
+                </div>
+
+                <div className="rounded-xl border border-kaia-border bg-kaia-surface p-3">
+                  <div className="flex items-center gap-1.5 text-xs text-kaia-muted mb-1">
+                    <Zap className="h-3.5 w-3.5" />
+                    <span>Fee Scaling</span>
+                  </div>
+                  <p className="text-sm font-semibold text-kaia-text">
+                    {(Number(pool.utilizationFactor) / 100).toFixed(0)}×
+                  </p>
+                  <p className="text-xs text-kaia-muted">utilization factor</p>
                 </div>
               </div>
 
@@ -75,6 +114,11 @@ export async function PoolsGrid() {
           </Card>
         ))}
       </div>
+
+      {/* Legend */}
+      <p className="text-xs text-kaia-muted text-center">
+        Fees scale with trade size · LP share accrues in-pool · Platform fee funds protocol development
+      </p>
     </div>
   );
 }

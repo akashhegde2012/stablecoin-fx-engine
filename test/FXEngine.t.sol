@@ -22,10 +22,10 @@ import "@pythnetwork/pyth-sdk-solidity/MockPyth.sol";
 /// @notice Full integration test suite for the FX engine with dual-oracle support.
 contract FXEngineTest is Test {
     // ── Price feed constants (8 decimals, USD) ────────────────────────────────
-    int256 constant MYR_USD  = 22_680_000;    // $0.2268
-    int256 constant SGD_USD  = 74_190_000;    // $0.7419
-    int256 constant IDRX_USD =      6_170;    // $0.0000617
-    int256 constant USDT_USD = 100_000_000;   // $1.0000
+    int256 constant MYR_USD = 22_680_000; // $0.2268
+    int256 constant SGD_USD = 74_190_000; // $0.7419
+    int256 constant IDRX_USD = 6_170; // $0.0000617
+    int256 constant USDT_USD = 100_000_000; // $1.0000
 
     // Pyth equivalent prices (USD/TOKEN for FX pairs, TOKEN/USD for crypto)
     // Inversion: TOKEN/USD = 10^16 / pyth_price (both at expo=-8)
@@ -49,13 +49,13 @@ contract FXEngineTest is Test {
 
     // ── Actors ─────────────────────────────────────────────────────────────────
     address owner = makeAddr("owner");
-    address alice = makeAddr("alice"); // LP provider
-    address bob   = makeAddr("bob");   // trader
+    address alice    = makeAddr("alice");    // LP provider
+    address bob      = makeAddr("bob");      // trader
     address treasury = makeAddr("treasury");
 
     // ── Tokens ─────────────────────────────────────────────────────────────────
-    MYRToken  myr;
-    SGDToken  sgd;
+    MYRToken myr;
+    SGDToken sgd;
     IDRXToken idrx;
     USDTToken usdt;
 
@@ -81,25 +81,25 @@ contract FXEngineTest is Test {
     OracleAggregator usdtOracle;
 
     // ── Pools & engine ─────────────────────────────────────────────────────────
-    FXPool   myrPool;
-    FXPool   sgdPool;
-    FXPool   idrxPool;
-    FXPool   usdtPool;
+    FXPool myrPool;
+    FXPool sgdPool;
+    FXPool idrxPool;
+    FXPool usdtPool;
     FXEngine engine;
 
     // ── Seed amounts ──────────────────────────────────────────────────────────
-    uint256 constant MYR_SEED  =     1_000_000 ether;
-    uint256 constant SGD_SEED  =       305_662 ether; // ≈ same USD value as 1M MYR
+    uint256 constant MYR_SEED = 1_000_000 ether;
+    uint256 constant SGD_SEED = 305_662 ether; // ≈ same USD value as 1M MYR
     uint256 constant IDRX_SEED = 3_677_472_000 ether; // ≈ same USD value
-    uint256 constant USDT_SEED =       226_800 ether; // ≈ same USD value
+    uint256 constant USDT_SEED = 226_800 ether; // ≈ same USD value
 
     // ─────────────────────────────────────────────────────────────────────────
     function setUp() public {
         vm.startPrank(owner);
 
         // Tokens
-        myr  = new MYRToken(owner);
-        sgd  = new SGDToken(owner);
+        myr = new MYRToken(owner);
+        sgd = new SGDToken(owner);
         idrx = new IDRXToken(owner);
         usdt = new USDTToken(owner);
 
@@ -132,13 +132,13 @@ contract FXEngineTest is Test {
             address(usdtOraklFeed), address(pyth), PYTH_USDT_ID, false, DEVIATION_BPS, owner
         );
 
-        // Pools (now take oracle aggregator + dynamic fee params)
+        // Pools with oracle aggregator + dynamic fee + platform fee params
         myrPool  = new FXPool(address(myr),  address(myrOracle),  "Wrapped MYR",  "wMYR",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, treasury, owner);
         sgdPool  = new FXPool(address(sgd),  address(sgdOracle),  "Wrapped SGD",  "wSGD",  BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, treasury, owner);
         idrxPool = new FXPool(address(idrx), address(idrxOracle), "Wrapped IDRX", "wIDRX", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, treasury, owner);
         usdtPool = new FXPool(address(usdt), address(usdtOracle), "Wrapped USDT", "wUSDT", BASE_FEE_RATE, UTILIZATION_FACTOR, MAX_DYNAMIC_FEE, PLATFORM_FEE_BPS, treasury, owner);
 
-        // Engine (now requires pyth address)
+        // Engine
         engine = new FXEngine(owner, address(pyth));
         engine.registerPool(address(myr),  address(myrPool));
         engine.registerPool(address(sgd),  address(sgdPool));
@@ -146,27 +146,31 @@ contract FXEngineTest is Test {
         engine.registerPool(address(usdt), address(usdtPool));
 
         // Authorise engine in pools
-        myrPool.setFXEngine(address(engine));
-        sgdPool.setFXEngine(address(engine));
-        idrxPool.setFXEngine(address(engine));
-        usdtPool.setFXEngine(address(engine));
+        myrPool.proposeEngine(address(engine));
+        myrPool.acceptEngine();
+        sgdPool.proposeEngine(address(engine));
+        sgdPool.acceptEngine();
+        idrxPool.proposeEngine(address(engine));
+        idrxPool.acceptEngine();
+        usdtPool.proposeEngine(address(engine));
+        usdtPool.acceptEngine();
 
         // Mint to alice (LP) and bob (trader)
-        myr.mint(alice,  MYR_SEED  + 10_000 ether);
-        sgd.mint(alice,  SGD_SEED  + 10_000 ether);
+        myr.mint(alice, MYR_SEED + 10_000 ether);
+        sgd.mint(alice, SGD_SEED + 10_000 ether);
         idrx.mint(alice, IDRX_SEED + 1_000_000_000 ether);
         usdt.mint(alice, USDT_SEED + 10_000 ether);
 
-        myr.mint(bob,  100_000 ether);
-        sgd.mint(bob,  100_000 ether);
-        usdt.mint(bob,  10_000 ether);
+        myr.mint(bob, 100_000 ether);
+        sgd.mint(bob, 100_000 ether);
+        usdt.mint(bob, 10_000 ether);
 
         vm.stopPrank();
 
         // Alice provides initial liquidity
         vm.startPrank(alice);
-        myr.approve(address(myrPool),   MYR_SEED);
-        sgd.approve(address(sgdPool),   SGD_SEED);
+        myr.approve(address(myrPool), MYR_SEED);
+        sgd.approve(address(sgdPool), SGD_SEED);
         idrx.approve(address(idrxPool), IDRX_SEED);
         usdt.approve(address(usdtPool), USDT_SEED);
 
@@ -192,20 +196,20 @@ contract FXEngineTest is Test {
     // =========================================================================
 
     function test_PoolsSeeded() public view {
-        assertEq(myrPool.getPoolBalance(),  MYR_SEED);
-        assertEq(sgdPool.getPoolBalance(),  SGD_SEED);
+        assertEq(myrPool.getPoolBalance(), MYR_SEED);
+        assertEq(sgdPool.getPoolBalance(), SGD_SEED);
         assertEq(idrxPool.getPoolBalance(), IDRX_SEED);
         assertEq(usdtPool.getPoolBalance(), USDT_SEED);
     }
 
     function test_LPTokensMinted() public view {
         LPToken wMYR = LPToken(myrPool.lpToken());
-        assertEq(wMYR.balanceOf(alice), MYR_SEED);
+        assertEq(wMYR.balanceOf(alice), MYR_SEED - 1000);
     }
 
     function test_EnginePoolsRegistered() public view {
-        assertEq(address(engine.pools(address(myr))),  address(myrPool));
-        assertEq(address(engine.pools(address(sgd))),  address(sgdPool));
+        assertEq(address(engine.pools(address(myr))), address(myrPool));
+        assertEq(address(engine.pools(address(sgd))), address(sgdPool));
         assertEq(address(engine.pools(address(idrx))), address(idrxPool));
         assertEq(address(engine.pools(address(usdt))), address(usdtPool));
         assertEq(engine.getRegisteredTokens().length, 4);
@@ -276,10 +280,8 @@ contract FXEngineTest is Test {
         uint256 quote = engine.getQuote(address(myr), address(sgd), amountIn);
 
         uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
-        // Dynamic fee: get effective rate from SGD pool
         uint256 effectiveRate = sgdPool.getEffectiveFeeRate(grossOut);
-        uint256 fee      = (grossOut * effectiveRate) / 10_000;
-        uint256 platformFee = (fee * PLATFORM_FEE_BPS) / 10_000;
+        uint256 fee = (grossOut * effectiveRate) / 10_000;
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
@@ -294,8 +296,7 @@ contract FXEngineTest is Test {
 
         uint256 grossOut = (amountIn * uint256(USDT_USD)) / uint256(IDRX_USD);
         uint256 effectiveRate = idrxPool.getEffectiveFeeRate(grossOut);
-        uint256 fee      = (grossOut * effectiveRate) / 10_000;
-        uint256 platformFee = (fee * PLATFORM_FEE_BPS) / 10_000;
+        uint256 fee = (grossOut * effectiveRate) / 10_000;
         uint256 expected = grossOut - fee;
 
         assertEq(quote, expected);
@@ -423,7 +424,7 @@ contract FXEngineTest is Test {
         assertEq(wMYR.balanceOf(lp2), 500_000 ether);
 
         assertEq(myrPool.getPoolBalance(), 1_500_000 ether);
-        assertEq(wMYR.totalSupply(),       1_500_000 ether);
+        assertEq(wMYR.totalSupply(), 1_500_000 ether);
 
         vm.startPrank(lp2);
         uint256 returned = myrPool.withdraw(lpMinted);
@@ -437,7 +438,7 @@ contract FXEngineTest is Test {
         FXPool sgdP = sgdPool;
         LPToken wSGD = LPToken(sgdP.lpToken());
 
-        uint256 supplyBefore  = wSGD.totalSupply();
+        uint256 supplyBefore = wSGD.totalSupply();
         uint256 balanceBefore = sgdP.getPoolBalance();
 
         uint256 amountIn = 1_000 ether;
@@ -451,7 +452,7 @@ contract FXEngineTest is Test {
 
         uint256 grossOut = (amountIn * uint256(MYR_USD)) / uint256(SGD_USD);
         uint256 effectiveRate = sgdP.getEffectiveFeeRate(grossOut);
-        uint256 fee      = (grossOut * effectiveRate) / 10_000;
+        uint256 fee = (grossOut * effectiveRate) / 10_000;
         uint256 platformFee = (fee * PLATFORM_FEE_BPS) / 10_000;
 
         uint256 balanceAfter = sgdP.getPoolBalance();
@@ -459,7 +460,7 @@ contract FXEngineTest is Test {
         assertEq(wSGD.totalSupply(), supplyBefore);
 
         uint256 rateBefore = (balanceBefore * 1e18) / supplyBefore;
-        uint256 rateAfter  = (balanceAfter  * 1e18) / wSGD.totalSupply();
+        uint256 rateAfter = (balanceAfter * 1e18) / wSGD.totalSupply();
 
         assertLt(rateAfter, rateBefore);
         assertEq(balanceBefore - balanceAfter, netOut + platformFee);

@@ -4,6 +4,8 @@ import { Skeleton }     from "@/components/ui/skeleton";
 import { SwapCard }     from "@/components/SwapCard";
 import { PoolsGrid }    from "@/components/PoolsGrid";
 import { LiquidityPanel } from "@/components/LiquidityPanel";
+import { IntentsPanel }  from "@/components/IntentsPanel";
+import { FaucetCard }    from "@/components/FaucetCard";
 
 function PoolsSkeleton() {
   return (
@@ -36,6 +38,8 @@ export default function HomePage() {
             <TabsTrigger value="swap">Swap</TabsTrigger>
             <TabsTrigger value="pools">Pools</TabsTrigger>
             <TabsTrigger value="liquidity">Liquidity</TabsTrigger>
+            <TabsTrigger value="intents">Intents</TabsTrigger>
+            <TabsTrigger value="faucet">Faucet</TabsTrigger>
           </TabsList>
         </div>
 
@@ -54,6 +58,16 @@ export default function HomePage() {
         {/* ── Liquidity ─────────────────────────────────── */}
         <TabsContent value="liquidity">
           <LiquidityPanel />
+        </TabsContent>
+
+        {/* ── Intents ───────────────────────────────────── */}
+        <TabsContent value="intents">
+          <IntentsPanel />
+        </TabsContent>
+
+        {/* ── Faucet ────────────────────────────────────── */}
+        <TabsContent value="faucet">
+          <FaucetCard />
         </TabsContent>
       </Tabs>
     </section>

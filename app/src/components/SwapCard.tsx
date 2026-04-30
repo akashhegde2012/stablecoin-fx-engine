@@ -23,7 +23,7 @@ import { Separator }     from "@/components/ui/separator";
 import { Skeleton }      from "@/components/ui/skeleton";
 import { TokenSelector } from "@/components/TokenSelector";
 import { getSwapQuote }  from "@/app/actions/quote";
-import { TOKENS, TOKEN_ADDRESSES, POOL_ADDRESSES, FXENGINE_ADDRESS, FXENGINE_ABI, ERC20_ABI, FXPOOL_ABI } from "@/lib/contracts";
+import { TOKENS, TOKEN_ADDRESSES, POOL_ADDRESSES, FXENGINE_ADDRESS, FXENGINE_ABI, ERC20_ABI, FXPOOL_ABI, SETTLEMENT_ENGINE_ADDRESS, SETTLEMENT_ENGINE_ABI } from "@/lib/contracts";
 import { useRouter } from "next/navigation";
 import { formatAmount }  from "@/lib/utils";
 import type { TokenSymbol } from "@/lib/contracts";
@@ -76,6 +76,21 @@ export function SwapCard() {
   const feeDisplay = effectiveFeeBps != null
     ? `${(Number(effectiveFeeBps) / 100).toFixed(2)}%`
     : null;
+
+  // ── Read platform fee bps from out pool ────────────────────────────────────
+  const { data: platformFeeBps = 0n } = useReadContract({
+    address:      poolOutAddr,
+    abi:          FXPOOL_ABI,
+    functionName: "platformFeeBps",
+    query:        { enabled: true },
+  });
+  const lpFeePct       = 100 - Number(platformFeeBps) / 100;
+  const platformFeePct = Number(platformFeeBps) / 100;
+
+  // ── Derived: min received ──────────────────────────────────────────────────
+  const minReceived = quoteRaw > 0n
+    ? (quoteRaw * BigInt(Math.floor((1 - parseFloat(slippage) / 100) * 10_000))) / 10_000n
+    : 0n;
 
   // ── Write: approve ──────────────────────────────────────────────────────────
   const {
@@ -298,12 +313,33 @@ export function SwapCard() {
               <span className="text-kaia-text">{rateDisplay}</span>
             </div>
             <div className="flex justify-between">
+              <span>Effective Fee</span>
+              <span className="text-kaia-text">{feeDisplay ?? "—"}</span>
+            </div>
+            {feeDisplay && (
+              <div className="flex justify-between">
+                <span>Fee Distribution</span>
+                <span className="text-kaia-text">
+                  <span className="text-kaia-primary">{lpFeePct.toFixed(0)}% LPs</span>
+                  {" / "}
+                  <span>{platformFeePct.toFixed(0)}% platform</span>
+                </span>
+              </div>
+            )}
+            {minReceived > 0n && (
+              <div className="flex justify-between">
+                <span>Min Received</span>
+                <span className="text-kaia-text font-medium">
+                  {parseFloat(
+                    (Number(minReceived) / 1e18).toFixed(6)
+                  ).toLocaleString("en-US", { minimumFractionDigits: 2, maximumFractionDigits: 6 })}{" "}
+                  {tokenOut}
+                </span>
+              </div>
+            )}
+            <div className="flex justify-between">
               <span>Slippage Tolerance</span>
               <span className="text-kaia-text">{slippage}%</span>
-            </div>
-            <div className="flex justify-between">
-              <span>Fee</span>
-              <span className="text-kaia-text">{feeDisplay ?? "—"}</span>
             </div>
           </div>
         )}

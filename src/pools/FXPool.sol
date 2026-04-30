@@ -4,27 +4,32 @@ pragma solidity ^0.8.20;
 import "@openzeppelin/contracts/token/ERC20/IERC20.sol";
 import "@openzeppelin/contracts/token/ERC20/utils/SafeERC20.sol";
 import "@openzeppelin/contracts/utils/ReentrancyGuard.sol";
+import "@openzeppelin/contracts/utils/Pausable.sol";
 import "@openzeppelin/contracts/access/Ownable.sol";
 import "../interfaces/IFXPool.sol";
 import "../oracles/OracleAggregator.sol";
 import "./LPToken.sol";
 
 /**
- @title FXPool
- @notice Single-sided liquidity pool for one stablecoin, priced via dual-oracle aggregator.
-         Utilization-based dynamic fees: small trades pay base fee, large trades pay more.
-*/
-contract FXPool is IFXPool, ReentrancyGuard, Ownable {
+ * @title FXPool
+ *  @notice Single-sided liquidity pool for one stablecoin, priced via dual-oracle aggregator.
+ *          Utilization-based dynamic fees: small trades pay base fee, large trades pay more.
+ */
+contract FXPool is IFXPool, ReentrancyGuard, Pausable, Ownable {
     using SafeERC20 for IERC20;
 
     uint256 public constant FEE_DENOMINATOR = 10_000;
     uint256 public constant MAX_FEE_RATE = 1_000; // 10% absolute cap
+
+    /// @notice Permanently locked LP tokens on first deposit to prevent inflation attacks.
+    uint256 public constant MINIMUM_LIQUIDITY = 1_000;
 
     IERC20 private immutable _stablecoin;
     LPToken private immutable _lpToken;
     OracleAggregator private immutable _oracle;
 
     address public fxEngine;
+    address public pendingFxEngine;
 
     // ── Dynamic fee parameters ─────────────────────────────────────────────────
     uint256 public override feeRate;             // base fee (bps), e.g. 10 = 0.10%
@@ -34,19 +39,6 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
     // ── Platform fee distribution ──────────────────────────────────────────────
     uint256 public override platformFeeBps;      // platform share of total fee (bps), e.g. 3000 = 30%
     address public override platformTreasury;
-
-    /**
-    @param stablecoin_        Underlying ERC-20 stablecoin.
-    @param oracle_            OracleAggregator address (dual Orakl + Pyth).
-    @param lpName_            LP token name.
-    @param lpSymbol_          LP token symbol.
-    @param baseFeeRate_       Base fee (bps, e.g. 10 = 0.10%).
-    @param utilizationFactor_ Utilization scaling factor (bps, e.g. 2000).
-    @param maxDynamicFeeRate_ Maximum dynamic fee cap (bps, e.g. 300 = 3%).
-    @param platformFeeBps_    Platform share of total fee (bps, e.g. 3000 = 30%).
-    @param platformTreasury_  Address receiving platform fees.
-    @param owner_             Pool owner.
-    */
     constructor(
         address stablecoin_,
         address oracle_,
@@ -82,7 +74,7 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
     // IFXPool - LP actions
     // -------------------------------------------------------------------------
 
-    function deposit(uint256 amount) external override nonReentrant returns (uint256 lpMinted) {
+    function deposit(uint256 amount) external override nonReentrant whenNotPaused returns (uint256 lpMinted) {
         require(amount > 0, "FXPool: zero amount");
 
         uint256 poolBalance = _stablecoin.balanceOf(address(this));
@@ -92,6 +84,9 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
 
         if (totalLp == 0 || poolBalance == 0) {
             lpMinted = amount;
+            require(lpMinted > MINIMUM_LIQUIDITY, "FXPool: initial deposit too small");
+            _lpToken.mint(address(0xdead), MINIMUM_LIQUIDITY);
+            lpMinted -= MINIMUM_LIQUIDITY;
         } else {
             lpMinted = (amount * totalLp) / poolBalance;
         }
@@ -102,7 +97,7 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         emit Deposited(msg.sender, amount, lpMinted);
     }
 
-    function withdraw(uint256 lpAmount) external override nonReentrant returns (uint256 amount) {
+    function withdraw(uint256 lpAmount) external override nonReentrant whenNotPaused returns (uint256 amount) {
         require(lpAmount > 0, "FXPool: zero lp amount");
 
         uint256 poolBalance = _stablecoin.balanceOf(address(this));
@@ -120,7 +115,7 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
 
     // Engine-only
 
-    function release(uint256 amount, address to) external override nonReentrant {
+    function release(uint256 amount, address to) external override nonReentrant whenNotPaused {
         require(msg.sender == fxEngine, "FXPool: only engine");
         require(to != address(0), "FXPool: zero recipient");
         require(amount <= _stablecoin.balanceOf(address(this)), "FXPool: insufficient liquidity");
@@ -180,27 +175,34 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         uint256 poolBal = _stablecoin.balanceOf(address(this));
         if (poolBal == 0) return maxDynamicFeeRate;
 
-        // utilization = grossOut / poolBalance (scaled by FEE_DENOMINATOR for precision)
         uint256 utilization = (grossOutAmount * FEE_DENOMINATOR) / poolBal;
-
-        // dynamicFee = baseFee + (utilization * utilizationFactor / FEE_DENOMINATOR)
         uint256 dynamicFee = feeRate + ((utilization * utilizationFactor) / FEE_DENOMINATOR);
 
-        // Cap at maxDynamicFeeRate
         if (dynamicFee > maxDynamicFeeRate) {
             return maxDynamicFeeRate;
         }
         return dynamicFee;
     }
 
+
     // -------------------------------------------------------------------------
     // Owner admin
     // -------------------------------------------------------------------------
 
-    function setFXEngine(address engine_) external onlyOwner {
+    /// @notice Propose a new FX engine. Must be accepted via acceptEngine().
+    function proposeEngine(address engine_) external onlyOwner {
         require(engine_ != address(0), "FXPool: zero engine");
-        emit EngineUpdated(fxEngine, engine_);
-        fxEngine = engine_;
+        pendingFxEngine = engine_;
+        emit EngineProposed(engine_);
+    }
+
+    /// @notice Accept a previously proposed engine, activating it.
+    function acceptEngine() external onlyOwner {
+        address pending = pendingFxEngine;
+        require(pending != address(0), "FXPool: no pending engine");
+        emit EngineUpdated(fxEngine, pending);
+        fxEngine = pending;
+        pendingFxEngine = address(0);
     }
 
     function setBaseFeeRate(uint256 baseFeeRate_) external onlyOwner {
@@ -231,5 +233,13 @@ contract FXPool is IFXPool, ReentrancyGuard, Ownable {
         require(treasury_ != address(0), "FXPool: zero treasury");
         emit PlatformTreasuryUpdated(platformTreasury, treasury_);
         platformTreasury = treasury_;
+    }
+
+    function pause() external onlyOwner {
+        _pause();
+    }
+
+    function unpause() external onlyOwner {
+        _unpause();
     }
 }

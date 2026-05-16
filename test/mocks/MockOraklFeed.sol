@@ -7,10 +7,12 @@ import "../../src/interfaces/IOraklFeed.sol";
 contract MockOraklFeed is IOraklFeed {
     uint8 private _decimals;
     int256 private _answer;
+    uint256 private _updatedAt;
 
     constructor(uint8 decimals_, int256 answer_) {
         _decimals = decimals_;
         _answer = answer_;
+        _updatedAt = block.timestamp;
     }
 
     function decimals() external view override returns (uint8) {
@@ -18,10 +20,14 @@ contract MockOraklFeed is IOraklFeed {
     }
 
     function latestRoundData() external view override returns (uint64 id, int256 answer, uint256 updatedAt) {
-        return (1, _answer, block.timestamp);
+        return (1, _answer, _updatedAt);
     }
 
     function updateAnswer(int256 answer_) external {
         _answer = answer_;
+    }
+
+    function updateTimestamp(uint256 updatedAt_) external {
+        _updatedAt = updatedAt_;
     }
 }

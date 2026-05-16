@@ -215,6 +215,163 @@ contract FXEngineTest is Test {
         assertEq(engine.getRegisteredTokens().length, 4);
     }
 
+    function test_StablecoinToken_MintBurnDecimalsAndOwner() public {
+        assertEq(myr.decimals(), 18);
+
+        vm.prank(owner);
+        myr.mint(bob, 123 ether);
+        assertEq(myr.balanceOf(bob), 100_123 ether);
+
+        vm.prank(bob);
+        myr.burn(23 ether);
+        assertEq(myr.balanceOf(bob), 100_100 ether);
+
+        vm.prank(bob);
+        vm.expectRevert();
+        myr.mint(bob, 1 ether);
+    }
+
+    function test_FXEngine_AdminAndPoolRegistryBranches() public {
+        address newPyth = makeAddr("newPyth");
+
+        vm.prank(owner);
+        engine.setPyth(newPyth);
+        assertEq(address(engine.pyth()), newPyth);
+
+        vm.prank(owner);
+        vm.expectRevert("FXEngine: zero token");
+        engine.registerPool(address(0), address(myrPool));
+
+        vm.prank(owner);
+        vm.expectRevert("FXEngine: zero pool");
+        engine.registerPool(makeAddr("newToken"), address(0));
+
+        uint256 tokenCount = engine.getRegisteredTokens().length;
+        vm.prank(owner);
+        engine.registerPool(address(myr), address(myrPool));
+        assertEq(engine.getRegisteredTokens().length, tokenCount);
+
+        vm.prank(owner);
+        vm.expectRevert("FXEngine: pool not found");
+        engine.removePool(makeAddr("missingToken"));
+
+        vm.prank(owner);
+        vm.expectRevert("FXEngine: no pool");
+        engine.getPoolInfo(makeAddr("missingToken"));
+    }
+
+    function test_FXPool_ConstructorBounds() public {
+        vm.startPrank(owner);
+        vm.expectRevert("FXPool: zero stablecoin");
+        new FXPool(
+            address(0),
+            address(myrOracle),
+            "Bad",
+            "BAD",
+            BASE_FEE_RATE,
+            UTILIZATION_FACTOR,
+            MAX_DYNAMIC_FEE,
+            PLATFORM_FEE_BPS,
+            treasury,
+            owner
+        );
+
+        vm.expectRevert("FXPool: zero oracle");
+        new FXPool(
+            address(myr),
+            address(0),
+            "Bad",
+            "BAD",
+            BASE_FEE_RATE,
+            UTILIZATION_FACTOR,
+            MAX_DYNAMIC_FEE,
+            PLATFORM_FEE_BPS,
+            treasury,
+            owner
+        );
+
+        vm.expectRevert("FXPool: base fee too high");
+        new FXPool(
+            address(myr),
+            address(myrOracle),
+            "Bad",
+            "BAD",
+            1_001,
+            UTILIZATION_FACTOR,
+            MAX_DYNAMIC_FEE,
+            PLATFORM_FEE_BPS,
+            treasury,
+            owner
+        );
+
+        vm.expectRevert("FXPool: max fee too high");
+        new FXPool(
+            address(myr),
+            address(myrOracle),
+            "Bad",
+            "BAD",
+            BASE_FEE_RATE,
+            UTILIZATION_FACTOR,
+            1_001,
+            PLATFORM_FEE_BPS,
+            treasury,
+            owner
+        );
+
+        vm.expectRevert("FXPool: base > max");
+        new FXPool(
+            address(myr),
+            address(myrOracle),
+            "Bad",
+            "BAD",
+            20,
+            UTILIZATION_FACTOR,
+            10,
+            PLATFORM_FEE_BPS,
+            treasury,
+            owner
+        );
+
+        vm.expectRevert("FXPool: platform bps too high");
+        new FXPool(
+            address(myr),
+            address(myrOracle),
+            "Bad",
+            "BAD",
+            BASE_FEE_RATE,
+            UTILIZATION_FACTOR,
+            MAX_DYNAMIC_FEE,
+            10_001,
+            treasury,
+            owner
+        );
+
+        vm.expectRevert("FXPool: zero treasury");
+        new FXPool(
+            address(myr),
+            address(myrOracle),
+            "Bad",
+            "BAD",
+            BASE_FEE_RATE,
+            UTILIZATION_FACTOR,
+            MAX_DYNAMIC_FEE,
+            PLATFORM_FEE_BPS,
+            address(0),
+            owner
+        );
+        vm.stopPrank();
+    }
+
+    function test_OracleAggregator_ConstructorBounds() public {
+        vm.startPrank(owner);
+        vm.expectRevert("OA: zero orakl");
+        new OracleAggregator(address(0), address(pyth), PYTH_MYR_ID, true, DEVIATION_BPS, owner);
+
+        vm.expectRevert("OA: zero pyth");
+        new OracleAggregator(address(myrOraklFeed), address(0), PYTH_MYR_ID, true, DEVIATION_BPS, owner);
+        vm.stopPrank();
+    }
+
     // =========================================================================
     // Oracle Aggregator
     // =========================================================================
@@ -269,6 +426,35 @@ contract FXEngineTest is Test {
 
         vm.expectRevert("OA: both oracles down");
         myrPool.getPrice();
+    }
+
+    function test_OracleAggregator_CrossValidationDeviationReverts() public {
+        myrOraklFeed.updateAnswer(MYR_USD * 2);
+
+        vm.expectRevert("OA: price deviation too high");
+        myrPool.getPrice();
+    }
+
+    function test_OracleAggregator_AdminSettersAndBounds() public {
+        vm.startPrank(owner);
+        myrOracle.setDeviationThreshold(500);
+        assertEq(myrOracle.deviationThresholdBps(), 500);
+
+        vm.expectRevert("OA: threshold too high");
+        myrOracle.setDeviationThreshold(501);
+
+        myrOracle.setCrossValidation(false);
+        assertFalse(myrOracle.crossValidationEnabled());
+
+        myrOracle.setMaxStaleness(999);
+        assertEq(myrOracle.maxStaleness(), 999);
+        vm.stopPrank();
+    }
+
+    function test_OracleAggregator_DirectPythPriceAndInvert() public view {
+        (int256 pythPrice, uint8 dec) = myrOracle.getPythPrice();
+        assertApproxEqAbs(uint256(pythPrice), uint256(MYR_USD), uint256(MYR_USD) / 10);
+        assertEq(dec, 8);
     }
 
     // =========================================================================
@@ -501,6 +687,58 @@ contract FXEngineTest is Test {
         assertEq(myrPool.maxDynamicFeeRate(), 500);
     }
 
+    function test_SetMaxDynamicFeeRate_RevertTooHighAndBelowBase() public {
+        vm.prank(owner);
+        vm.expectRevert("FXPool: max fee too high");
+        myrPool.setMaxDynamicFeeRate(1_001);
+
+        vm.prank(owner);
+        myrPool.setBaseFeeRate(200);
+
+        vm.prank(owner);
+        vm.expectRevert("FXPool: base > new max");
+        myrPool.setMaxDynamicFeeRate(199);
+    }
+
+    function test_PlatformFee_SettersBounds() public {
+        vm.startPrank(owner);
+        vm.expectRevert("FXPool: platform bps too high");
+        sgdPool.setPlatformFeeBps(10_001);
+
+        vm.expectRevert("FXPool: zero treasury");
+        sgdPool.setPlatformTreasury(address(0));
+        vm.stopPrank();
+    }
+
+    function test_EngineTwoStepSetter_BoundsAndSuccess() public {
+        vm.startPrank(owner);
+        FXPool freshPool = new FXPool(
+            address(myr),
+            address(myrOracle),
+            "Fresh MYR",
+            "fwMYR",
+            BASE_FEE_RATE,
+            UTILIZATION_FACTOR,
+            MAX_DYNAMIC_FEE,
+            PLATFORM_FEE_BPS,
+            treasury,
+            owner
+        );
+
+        vm.expectRevert("FXPool: no pending engine");
+        freshPool.acceptEngine();
+
+        vm.expectRevert("FXPool: zero engine");
+        freshPool.proposeEngine(address(0));
+
+        freshPool.proposeEngine(address(engine));
+        assertEq(freshPool.pendingFxEngine(), address(engine));
+        freshPool.acceptEngine();
+        assertEq(freshPool.fxEngine(), address(engine));
+        assertEq(freshPool.pendingFxEngine(), address(0));
+        vm.stopPrank();
+    }
+
     function test_RemovePool() public {
         vm.prank(owner);
         engine.removePool(address(myr));
@@ -516,6 +754,70 @@ contract FXEngineTest is Test {
         vm.prank(alice);
         vm.expectRevert("FXPool: only engine");
         myrPool.release(1 ether, alice);
+    }
+
+    function test_FXPool_PauseBlocksDepositWithdrawAndRelease() public {
+        vm.prank(owner);
+        myrPool.pause();
+
+        vm.startPrank(alice);
+        myr.approve(address(myrPool), 1 ether);
+        vm.expectRevert();
+        myrPool.deposit(1 ether);
+
+        vm.expectRevert();
+        myrPool.withdraw(1 ether);
+        vm.stopPrank();
+
+        vm.prank(address(engine));
+        vm.expectRevert();
+        myrPool.release(1 ether, bob);
+
+        vm.prank(owner);
+        myrPool.unpause();
+
+        vm.prank(address(engine));
+        myrPool.release(1 ether, bob);
+    }
+
+    function test_FXPool_ReleaseBounds() public {
+        vm.prank(address(engine));
+        vm.expectRevert("FXPool: zero recipient");
+        myrPool.release(1 ether, address(0));
+
+        vm.prank(address(engine));
+        vm.expectRevert("FXPool: insufficient liquidity");
+        myrPool.release(MYR_SEED + 1, bob);
+
+        vm.prank(address(engine));
+        vm.expectRevert("FXPool: insufficient liquidity");
+        myrPool.releasePlatformFee(MYR_SEED + 1);
+    }
+
+    function test_FXPool_InitialDepositTooSmallAndZeroRatePaths() public {
+        vm.startPrank(owner);
+        FXPool freshPool = new FXPool(
+            address(myr),
+            address(myrOracle),
+            "Tiny MYR",
+            "twMYR",
+            BASE_FEE_RATE,
+            UTILIZATION_FACTOR,
+            MAX_DYNAMIC_FEE,
+            PLATFORM_FEE_BPS,
+            treasury,
+            owner
+        );
+        vm.stopPrank();
+
+        assertEq(freshPool.lpToStablecoinRate(), 1e18);
+        assertEq(freshPool.getEffectiveFeeRate(1 ether), MAX_DYNAMIC_FEE);
+
+        vm.startPrank(bob);
+        myr.approve(address(freshPool), 1000);
+        vm.expectRevert("FXPool: initial deposit too small");
+        freshPool.deposit(1000);
+        vm.stopPrank();
     }
 
     function test_LPToken_MintRevertFromNonPool() public {
@@ -549,6 +851,100 @@ contract FXEngineTest is Test {
         vm.expectRevert("FXEngine: zero amountIn");
         engine.swap(address(myr), address(sgd), 0, 0, bob);
         vm.stopPrank();
+    }
+
+    function test_Swap_InputValidationAndPauseBranches() public {
+        vm.expectRevert("FXEngine: zero recipient");
+        engine.swap(address(myr), address(sgd), 1 ether, 0, address(0));
+
+        vm.expectRevert("FXEngine: no pool for tokenIn");
+        engine.swap(makeAddr("missingIn"), address(sgd), 1 ether, 0, bob);
+
+        vm.expectRevert("FXEngine: no pool for tokenOut");
+        engine.swap(address(myr), makeAddr("missingOut"), 1 ether, 0, bob);
+
+        vm.prank(owner);
+        engine.pause();
+
+        vm.startPrank(bob);
+        myr.approve(address(engine), 1 ether);
+        vm.expectRevert();
+        engine.swap(address(myr), address(sgd), 1 ether, 0, bob);
+        vm.stopPrank();
+
+        vm.prank(owner);
+        engine.unpause();
+    }
+
+    function test_GetQuote_RevertsOnInvalidPools() public {
+        vm.expectRevert("FXEngine: same token");
+        engine.getQuote(address(myr), address(myr), 1 ether);
+
+        vm.expectRevert("FXEngine: no pool for tokenIn");
+        engine.getQuote(makeAddr("missingIn"), address(sgd), 1 ether);
+
+        vm.expectRevert("FXEngine: no pool for tokenOut");
+        engine.getQuote(address(myr), makeAddr("missingOut"), 1 ether);
+    }
+
+    function test_GetQuote_NormalizesMismatchedOracleDecimals() public {
+        vm.startPrank(owner);
+        MYRToken decHighToken = new MYRToken(owner);
+        SGDToken decLowToken = new SGDToken(owner);
+        MockOraklFeed decHighFeed = new MockOraklFeed(10, 1_000_000_0000);
+        MockOraklFeed decLowFeed = new MockOraklFeed(8, 100_000_000);
+        OracleAggregator decHighOracle = new OracleAggregator(
+            address(decHighFeed), address(pyth), bytes32(uint256(101)), false, DEVIATION_BPS, owner
+        );
+        OracleAggregator decLowOracle = new OracleAggregator(
+            address(decLowFeed), address(pyth), bytes32(uint256(102)), false, DEVIATION_BPS, owner
+        );
+        decHighOracle.setCrossValidation(false);
+        decLowOracle.setCrossValidation(false);
+
+        FXPool decHighPool = new FXPool(
+            address(decHighToken),
+            address(decHighOracle),
+            "Decimal High",
+            "dHIGH",
+            BASE_FEE_RATE,
+            0,
+            MAX_DYNAMIC_FEE,
+            0,
+            treasury,
+            owner
+        );
+        FXPool decLowPool = new FXPool(
+            address(decLowToken),
+            address(decLowOracle),
+            "Decimal Low",
+            "dLOW",
+            BASE_FEE_RATE,
+            0,
+            MAX_DYNAMIC_FEE,
+            0,
+            treasury,
+            owner
+        );
+        engine.registerPool(address(decHighToken), address(decHighPool));
+        engine.registerPool(address(decLowToken), address(decLowPool));
+
+        decHighToken.mint(alice, 100_000 ether);
+        decLowToken.mint(alice, 100_000 ether);
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        decHighToken.approve(address(decHighPool), 100_000 ether);
+        decLowToken.approve(address(decLowPool), 100_000 ether);
+        decHighPool.deposit(100_000 ether);
+        decLowPool.deposit(100_000 ether);
+        vm.stopPrank();
+
+        uint256 highToLow = engine.getQuote(address(decHighToken), address(decLowToken), 1_000 ether);
+        uint256 lowToHigh = engine.getQuote(address(decLowToken), address(decHighToken), 1_000 ether);
+
+        assertEq(highToLow, 999 ether);
+        assertEq(lowToHigh, 999 ether);
     }
 
     function test_Deposit_ZeroAmount_Reverts() public {

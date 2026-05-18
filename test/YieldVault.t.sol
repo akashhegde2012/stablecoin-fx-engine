@@ -13,6 +13,16 @@ import "../src/tokens/SGDToken.sol";
 import "../src/vaults/YieldVault.sol";
 import "../src/FXEngine.sol";
 
+contract MockHarvestDistributor {
+    address public lastVault;
+    uint256 public totalNotified;
+
+    function notifyFees(address vault, uint256 amount) external {
+        lastVault = vault;
+        totalNotified += amount;
+    }
+}
+
 /// @title YieldVaultTest
 /// @notice Integration tests for the ERC-4626 YieldVault and strategy layer.
 contract YieldVaultTest is Test {
@@ -126,6 +136,31 @@ contract YieldVaultTest is Test {
         assertEq(dec, 8);
     }
 
+    function test_GetPrice_RevertsInvalidAndStale() public {
+        usdtFeed.updateAnswer(0);
+        vm.expectRevert("YieldVault: invalid price");
+        usdtVault.getPrice();
+
+        vm.warp(10_000);
+        usdtFeed.updateAnswer(USDT_USD);
+        usdtFeed.updateTimestamp(block.timestamp - usdtVault.maxStaleness() - 1);
+        vm.expectRevert("YieldVault: stale price");
+        usdtVault.getPrice();
+    }
+
+    function test_Constructor_Bounds() public {
+        vm.startPrank(owner);
+        vm.expectRevert("YieldVault: zero priceFeed");
+        new YieldVault(IERC20(address(usdt)), address(0), "Bad", "BAD", FEE_RATE, COVERAGE_RATIO, owner);
+
+        vm.expectRevert("YieldVault: fee too high");
+        new YieldVault(IERC20(address(usdt)), address(usdtFeed), "Bad", "BAD", 1_001, COVERAGE_RATIO, owner);
+
+        vm.expectRevert("YieldVault: invalid ratio");
+        new YieldVault(IERC20(address(usdt)), address(usdtFeed), "Bad", "BAD", FEE_RATE, 10_001, owner);
+        vm.stopPrank();
+    }
+
     // =====================================================================
     //  ERC-4626 deposit / withdraw
     // =====================================================================
@@ -201,6 +236,20 @@ contract YieldVaultTest is Test {
         assertEq(usdtVault.deployedCapital(), 500_000 ether);
     }
 
+    function test_Rebalance_NoopsWhenLiquidEqualsTarget() public {
+        vm.prank(owner);
+        usdtVault.rebalance();
+
+        uint256 liquidBefore = usdtVault.liquidReserve();
+        uint256 deployedBefore = usdtVault.deployedCapital();
+
+        vm.prank(owner);
+        usdtVault.rebalance();
+
+        assertEq(usdtVault.liquidReserve(), liquidBefore);
+        assertEq(usdtVault.deployedCapital(), deployedBefore);
+    }
+
     // =====================================================================
     //  Strategy: harvest
     // =====================================================================
@@ -231,6 +280,23 @@ contract YieldVaultTest is Test {
 
         console.log("Share value before (e18):", (totalBefore * 1e18) / sharesBefore);
         console.log("Share value after  (e18):", (usdtVault.totalAssets() * 1e18) / sharesBefore);
+    }
+
+    function test_Harvest_DistributorFeeBranch() public {
+        MockHarvestDistributor distributor = new MockHarvestDistributor();
+
+        vm.startPrank(owner);
+        usdtVault.setDistributor(address(distributor));
+        usdtVault.setHarvestFeeRate(1_000);
+        usdtVault.rebalance();
+        usdt.mint(address(usdtStrategy), 10_000 ether);
+        uint256 profitAfterFee = usdtVault.harvest();
+        vm.stopPrank();
+
+        assertEq(profitAfterFee, 9_000 ether);
+        assertEq(usdt.balanceOf(address(distributor)), 1_000 ether);
+        assertEq(distributor.lastVault(), address(usdtVault));
+        assertEq(distributor.totalNotified(), 1_000 ether);
     }
 
     // =====================================================================
@@ -347,6 +413,36 @@ contract YieldVaultTest is Test {
         assertEq(usdtVault.deployedCapital(), 0);
     }
 
+    function test_SetStrategy_ToZeroClearsApprovalAndNoStrategyBranches() public {
+        vm.prank(owner);
+        usdtVault.setStrategy(address(0));
+        assertEq(address(usdtVault.strategy()), address(0));
+        assertEq(usdtVault.deployedCapital(), 0);
+        assertEq(usdtVault.totalAssets(), SEED);
+
+        vm.prank(owner);
+        vm.expectRevert("YieldVault: no strategy");
+        usdtVault.rebalance();
+
+        vm.prank(owner);
+        vm.expectRevert("YieldVault: no strategy");
+        usdtVault.harvest();
+    }
+
+    function test_Rebalance_ReturnsWhenTotalAssetsZero() public {
+        vm.startPrank(owner);
+        YieldVault emptyVault = new YieldVault(
+            IERC20(address(usdt)), address(usdtFeed), "Empty USDT", "eyvUSDT", FEE_RATE, COVERAGE_RATIO, owner
+        );
+        MockStrategy emptyStrategy = new MockStrategy(address(emptyVault), address(usdt));
+        emptyVault.setStrategy(address(emptyStrategy));
+        emptyVault.rebalance();
+        vm.stopPrank();
+
+        assertEq(emptyVault.totalAssets(), 0);
+        assertEq(emptyVault.deployedCapital(), 0);
+    }
+
     // =====================================================================
     //  Access control
     // =====================================================================
@@ -355,6 +451,16 @@ contract YieldVaultTest is Test {
         vm.prank(alice);
         vm.expectRevert("YieldVault: only engine");
         usdtVault.release(1 ether, alice);
+    }
+
+    function test_Release_RecipientAndLiquidityBounds() public {
+        vm.prank(address(engine));
+        vm.expectRevert("YieldVault: zero recipient");
+        usdtVault.release(1 ether, address(0));
+
+        vm.prank(address(engine));
+        vm.expectRevert("YieldVault: insufficient liquidity after recall");
+        usdtVault.release(SEED + 1, bob);
     }
 
     function test_Rebalance_OnlyOwner() public {
@@ -381,6 +487,92 @@ contract YieldVaultTest is Test {
         usdtVault.setFeeRate(1_001);
     }
 
+    function test_EngineTwoStepSetter_BoundsAndSuccess() public {
+        vm.startPrank(owner);
+        YieldVault freshVault = new YieldVault(
+            IERC20(address(usdt)), address(usdtFeed), "Fresh USDT", "fyvUSDT", FEE_RATE, COVERAGE_RATIO, owner
+        );
+
+        vm.expectRevert("YieldVault: no pending engine");
+        freshVault.acceptEngine();
+
+        vm.expectRevert("YieldVault: zero engine");
+        freshVault.proposeEngine(address(0));
+
+        freshVault.proposeEngine(address(engine));
+        assertEq(freshVault.pendingFxEngine(), address(engine));
+        freshVault.acceptEngine();
+        assertEq(freshVault.fxEngine(), address(engine));
+        assertEq(freshVault.pendingFxEngine(), address(0));
+        vm.stopPrank();
+    }
+
+    function test_AdminSetterBoundsAndViews() public {
+        vm.startPrank(owner);
+        vm.expectRevert("YieldVault: invalid ratio");
+        usdtVault.setTargetCoverageRatio(10_001);
+
+        vm.expectRevert("YieldVault: harvest fee too high");
+        usdtVault.setHarvestFeeRate(2_001);
+
+        vm.expectRevert("YieldVault: staleness too short");
+        usdtVault.setMaxStaleness(59);
+
+        usdtVault.setDistributor(bob);
+        assertEq(usdtVault.distributor(), bob);
+
+        usdtVault.setHarvestFeeRate(2_000);
+        assertEq(usdtVault.harvestFeeRate(), 2_000);
+
+        usdtVault.setMaxStaleness(60);
+        assertEq(usdtVault.maxStaleness(), 60);
+        vm.stopPrank();
+
+        assertEq(usdtVault.getEffectiveFeeRate(123), usdtVault.feeRate());
+        assertEq(usdtVault.maxDynamicFeeRate(), usdtVault.feeRate());
+        assertEq(usdtVault.platformFeeBps(), 0);
+        assertEq(usdtVault.platformTreasury(), address(0));
+
+        vm.expectRevert("YieldVault: no platform fee");
+        usdtVault.releasePlatformFee(1);
+    }
+
+    function test_PauseBlocksERC4626AndPoolEntrypoints() public {
+        vm.prank(owner);
+        usdtVault.pause();
+
+        vm.startPrank(alice);
+        usdt.approve(address(usdtVault), 1 ether);
+        vm.expectRevert();
+        usdtVault.deposit(1 ether, alice);
+
+        vm.expectRevert();
+        usdtVault.mint(1 ether, alice);
+
+        vm.expectRevert();
+        usdtVault.withdraw(1 ether, alice, alice);
+
+        vm.expectRevert();
+        usdtVault.redeem(1 ether, alice, alice);
+
+        vm.expectRevert();
+        usdtVault.deposit(1 ether);
+
+        vm.expectRevert();
+        usdtVault.withdraw(1 ether);
+        vm.stopPrank();
+
+        vm.prank(address(engine));
+        vm.expectRevert();
+        usdtVault.release(1 ether, bob);
+
+        vm.prank(owner);
+        usdtVault.unpause();
+
+        vm.prank(address(engine));
+        usdtVault.release(1 ether, bob);
+    }
+
     // =====================================================================
     //  Coverage ratio view
     // =====================================================================
@@ -388,6 +580,16 @@ contract YieldVaultTest is Test {
     function test_CoverageRatio_FullyLiquid() public view {
         // No strategy deployed yet → 100 % liquid
         assertEq(usdtVault.currentCoverageRatio(), 10_000);
+    }
+
+    function test_CoverageRatio_EmptyVaultIsFullCoverage() public {
+        vm.startPrank(owner);
+        YieldVault emptyVault = new YieldVault(
+            IERC20(address(usdt)), address(usdtFeed), "Empty Coverage", "ecUSDT", FEE_RATE, COVERAGE_RATIO, owner
+        );
+        vm.stopPrank();
+
+        assertEq(emptyVault.currentCoverageRatio(), 10_000);
     }
 
     function test_CoverageRatio_AfterRebalance() public {

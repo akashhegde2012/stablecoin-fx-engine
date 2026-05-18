@@ -5,6 +5,7 @@ import "forge-std/Test.sol";
 import "forge-std/console.sol";
 
 import "./mocks/MockOraklFeed.sol";
+import "./mocks/MockAavePool.sol";
 import "./mocks/MockPendleSY.sol";
 import "./mocks/MockMorphoVault.sol";
 import "./mocks/MockStrategy.sol";
@@ -13,6 +14,7 @@ import "../src/tokens/USDTToken.sol";
 import "../src/tokens/SGDToken.sol";
 
 import "../src/vaults/YieldVault.sol";
+import "../src/strategies/AaveStrategy.sol";
 import "../src/strategies/PendleStrategy.sol";
 import "../src/strategies/MorphoStrategy.sol";
 import "../src/FXEngine.sol";
@@ -46,10 +48,12 @@ contract StrategyAdaptersTest is Test {
     FXEngine engine;
 
     // ── Protocol mocks ───────────────────────────────────────────────────────
+    MockAavePool aavePool;
     MockPendleSY pendleSY;
     MockMorphoVault morphoMock;
 
     // ── Strategies ───────────────────────────────────────────────────────────
+    AaveStrategy aaveStrat;
     PendleStrategy pendleStrat;
     MorphoStrategy morphoStrat;
     MockStrategy simpleStrat; // the Phase-1 mock for baseline comparison
@@ -72,10 +76,12 @@ contract StrategyAdaptersTest is Test {
         );
 
         // Protocol mocks
+        aavePool = new MockAavePool(address(usdt));
         pendleSY = new MockPendleSY(address(usdt));
         morphoMock = new MockMorphoVault(address(usdt));
 
         // Strategies (all for USDT vault)
+        aaveStrat = new AaveStrategy(address(usdtVault), address(usdt), address(aavePool), address(aavePool.aToken()));
         pendleStrat = new PendleStrategy(address(usdtVault), address(usdt), address(pendleSY));
         morphoStrat = new MorphoStrategy(address(usdtVault), address(usdt), address(morphoMock));
         simpleStrat = new MockStrategy(address(usdtVault), address(usdt));
@@ -104,6 +110,167 @@ contract StrategyAdaptersTest is Test {
         usdtVault.deposit(SEED);
         sgdVault.deposit(SEED);
         vm.stopPrank();
+    }
+
+    // =====================================================================
+    //  AAVE STRATEGY
+    // =====================================================================
+
+    function test_Aave_DeployAndRebalance() public {
+        vm.startPrank(owner);
+        usdtVault.setStrategy(address(aaveStrat));
+        usdtVault.rebalance();
+        vm.stopPrank();
+
+        assertEq(usdtVault.liquidReserve(), 200_000 ether);
+        assertEq(usdtVault.deployedCapital(), 800_000 ether);
+        assertEq(usdtVault.totalAssets(), SEED);
+        assertEq(aaveStrat.totalDeposited(), 800_000 ether);
+        assertEq(aavePool.aToken().balanceOf(address(aaveStrat)), 800_000 ether);
+        assertEq(usdt.balanceOf(address(aavePool)), 800_000 ether);
+    }
+
+    function test_Aave_Harvest() public {
+        vm.startPrank(owner);
+        usdtVault.setStrategy(address(aaveStrat));
+        usdtVault.rebalance();
+        uint256 totalBeforeYield = usdtVault.totalAssets();
+
+        uint256 yield_ = 32_000 ether;
+        usdt.mint(address(aavePool), yield_);
+        aavePool.accrueYield(address(aaveStrat), yield_);
+        vm.stopPrank();
+
+        assertEq(usdtVault.deployedCapital(), 832_000 ether);
+
+        uint256 sharesBefore = usdtVault.totalSupply();
+        uint256 totalBefore = usdtVault.totalAssets();
+
+        vm.prank(owner);
+        uint256 profit = usdtVault.harvest();
+
+        assertEq(profit, yield_);
+        assertEq(aaveStrat.totalDeposited(), 800_000 ether);
+        assertEq(usdtVault.totalSupply(), sharesBefore);
+        assertEq(totalBefore, totalBeforeYield + yield_);
+        assertEq(usdtVault.totalAssets(), totalBefore);
+    }
+
+    function test_Aave_WithdrawRecalls() public {
+        vm.startPrank(owner);
+        usdtVault.setStrategy(address(aaveStrat));
+        usdtVault.rebalance();
+        vm.stopPrank();
+
+        vm.startPrank(alice);
+        uint256 returned = usdtVault.withdraw(500_000 ether);
+        vm.stopPrank();
+
+        assertEq(returned, 500_000 ether);
+        assertEq(usdtVault.totalAssets(), 500_000 ether);
+        assertEq(aaveStrat.totalDeposited(), 500_000 ether);
+    }
+
+    function test_Aave_SwapThroughVault() public {
+        vm.startPrank(owner);
+        usdtVault.setStrategy(address(aaveStrat));
+        usdtVault.rebalance();
+        vm.stopPrank();
+
+        uint256 amountIn = 1_000 ether;
+        uint256 quote = engine.getQuote(address(usdt), address(sgd), amountIn);
+
+        vm.startPrank(bob);
+        usdt.approve(address(engine), amountIn);
+        uint256 out = engine.swap(address(usdt), address(sgd), amountIn, quote, bob);
+        vm.stopPrank();
+
+        assertEq(out, quote);
+    }
+
+    function test_Aave_OnlyVaultCanCallStrategy() public {
+        vm.prank(owner);
+        usdtVault.setStrategy(address(aaveStrat));
+
+        vm.prank(alice);
+        vm.expectRevert("BaseStrategy: only vault");
+        aaveStrat.deposit(1_000 ether);
+
+        vm.prank(alice);
+        vm.expectRevert("BaseStrategy: only vault");
+        aaveStrat.withdraw(1_000 ether);
+
+        vm.prank(alice);
+        vm.expectRevert("BaseStrategy: only vault");
+        aaveStrat.harvest();
+    }
+
+    function test_Aave_HarvestZeroYield() public {
+        vm.startPrank(owner);
+        usdtVault.setStrategy(address(aaveStrat));
+        usdtVault.rebalance();
+
+        uint256 profit = usdtVault.harvest();
+        vm.stopPrank();
+
+        assertEq(profit, 0);
+        assertEq(aaveStrat.totalDeposited(), 800_000 ether);
+    }
+
+    function test_Aave_WithdrawSlippageReverts() public {
+        vm.startPrank(owner);
+        usdtVault.setStrategy(address(aaveStrat));
+        usdtVault.rebalance();
+        aavePool.setWithdrawBps(9_900);
+        vm.stopPrank();
+
+        vm.prank(alice);
+        vm.expectRevert("AaveStrategy: withdraw slippage");
+        usdtVault.withdraw(500_000 ether);
+    }
+
+    function test_Aave_FullWithdrawal() public {
+        vm.startPrank(owner);
+        usdtVault.setStrategy(address(aaveStrat));
+        usdtVault.rebalance();
+        vm.stopPrank();
+
+        uint256 DEAD = 1000;
+        vm.startPrank(alice);
+        usdtVault.withdraw(usdtVault.balanceOf(alice));
+        vm.stopPrank();
+
+        assertApproxEqAbs(usdtVault.totalAssets(), DEAD, 1);
+        assertApproxEqAbs(usdtVault.deployedCapital(), DEAD, 1);
+        assertEq(usdtVault.totalSupply(), DEAD);
+    }
+
+    function test_Aave_ConstructorRejectsZeroPool() public {
+        address aToken = address(aavePool.aToken());
+
+        vm.expectRevert("AaveStrategy: zero pool");
+        new AaveStrategy(address(usdtVault), address(usdt), address(0), aToken);
+    }
+
+    function test_Aave_ConstructorRejectsZeroAToken() public {
+        vm.expectRevert("AaveStrategy: zero aToken");
+        new AaveStrategy(address(usdtVault), address(usdt), address(aavePool), address(0));
+    }
+
+    function test_StrategyConstructors_RejectBaseAndAdapterZeroAddresses() public {
+        address aToken = address(aavePool.aToken());
+
+        vm.expectRevert("BaseStrategy: zero vault");
+        new AaveStrategy(address(0), address(usdt), address(aavePool), aToken);
+
+        vm.expectRevert("BaseStrategy: zero asset");
+        new AaveStrategy(address(usdtVault), address(0), address(aavePool), aToken);
+
+        vm.expectRevert("PendleStrategy: zero SY");
+        new PendleStrategy(address(usdtVault), address(usdt), address(0));
+
+        vm.expectRevert("MorphoStrategy: zero vault");
+        new MorphoStrategy(address(usdtVault), address(usdt), address(0));
     }
 
     // =====================================================================
@@ -383,7 +550,6 @@ contract StrategyAdaptersTest is Test {
         usdtVault.setStrategy(address(newMorpho));
         usdtVault.rebalance();
 
-        uint256 deployedInMorpho = usdtVault.deployedCapital();
         uint256 morphoYield = 8_000 ether;
         usdt.mint(address(morphoMock), morphoYield);
         vm.stopPrank();

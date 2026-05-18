@@ -1,0 +1,25 @@
+import "@testing-library/jest-dom/vitest";
+
+process.env.NEXT_PUBLIC_CHAIN_ID = "31337";
+process.env.NEXT_PUBLIC_RPC_URL = "http://127.0.0.1:8545";
+process.env.NEXT_PUBLIC_FXENGINE_ADDRESS = "0x00000000000000000000000000000000000000f0";
+process.env.NEXT_PUBLIC_TOKEN_MYR = "0x0000000000000000000000000000000000000001";
+process.env.NEXT_PUBLIC_TOKEN_SGD = "0x0000000000000000000000000000000000000002";
+process.env.NEXT_PUBLIC_TOKEN_IDRX = "0x0000000000000000000000000000000000000003";
+process.env.NEXT_PUBLIC_TOKEN_USDT = "0x0000000000000000000000000000000000000004";
+process.env.NEXT_PUBLIC_POOL_MYR = "0x0000000000000000000000000000000000000011";
+process.env.NEXT_PUBLIC_POOL_SGD = "0x0000000000000000000000000000000000000012";
+process.env.NEXT_PUBLIC_POOL_IDRX = "0x0000000000000000000000000000000000000013";
+process.env.NEXT_PUBLIC_POOL_USDT = "0x0000000000000000000000000000000000000014";
+
+if (!Element.prototype.hasPointerCapture) {
+  Element.prototype.hasPointerCapture = () => false;
+}
+
+if (!Element.prototype.releasePointerCapture) {
+  Element.prototype.releasePointerCapture = () => undefined;
+}
+
+if (!Element.prototype.scrollIntoView) {
+  Element.prototype.scrollIntoView = () => undefined;
+}

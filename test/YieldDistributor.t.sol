@@ -139,13 +139,46 @@ contract YieldDistributorTest is Test {
         assertTrue(reg);
     }
 
+    function test_RegisterVault_BoundsAndDuplicate() public {
+        vm.startPrank(owner);
+        vm.expectRevert("YD: zero vault");
+        distributor.registerVault(address(0));
+
+        vm.expectRevert("YD: already registered");
+        distributor.registerVault(address(usdtVault));
+        vm.stopPrank();
+    }
+
+    function test_RemoveVault_SuccessAndBounds() public {
+        vm.startPrank(owner);
+        vm.expectRevert("YD: not registered");
+        distributor.removeVault(address(0x1234));
+
+        distributor.removeVault(address(sgdVault));
+        assertEq(distributor.getVaultCount(), 1);
+        (bool registered,,,,,,) = distributor.vaults(address(sgdVault));
+        assertFalse(registered);
+        vm.stopPrank();
+    }
+
+    function test_RemoveVault_RevertsWithStakers() public {
+        uint256 aliceShares = usdtVault.balanceOf(alice);
+        vm.startPrank(alice);
+        IERC20(address(usdtVault)).approve(address(distributor), aliceShares);
+        distributor.stake(address(usdtVault), aliceShares);
+        vm.stopPrank();
+
+        vm.prank(owner);
+        vm.expectRevert("YD: has stakers");
+        distributor.removeVault(address(usdtVault));
+    }
+
     // =====================================================================
     //  Protocol fee collection from swaps
     // =====================================================================
 
     function test_ProtocolFee_CollectedOnSwap() public {
         uint256 amountIn = 1_000 ether;
-        uint256 distBalBefore = usdt.balanceOf(address(distributor));
 
         vm.startPrank(bob);
         usdt.approve(address(engine), amountIn);
@@ -476,6 +509,16 @@ contract YieldDistributorTest is Test {
         distributor.notifyFees(address(usdtVault), 1_000 ether);
     }
 
+    function test_NotifyFees_ZeroAmountNoopsAndUnregisteredReverts() public {
+        vm.prank(address(engine));
+        distributor.notifyFees(address(usdtVault), 0);
+        assertEq(distributor.undistributedFees(address(usdtVault)), 0);
+
+        vm.prank(address(engine));
+        vm.expectRevert("YD: vault not registered");
+        distributor.notifyFees(address(0x1234), 1);
+    }
+
     function test_RegisterVault_OnlyOwner() public {
         vm.prank(bob);
         vm.expectRevert();
@@ -492,6 +535,66 @@ contract YieldDistributorTest is Test {
         vm.prank(alice);
         vm.expectRevert("YD: insufficient stake");
         distributor.unstake(address(usdtVault), 1_000 ether);
+    }
+
+    function test_StakeUnstakeAndEmergency_ZeroAmountBounds() public {
+        vm.startPrank(alice);
+        vm.expectRevert("YD: zero amount");
+        distributor.stake(address(usdtVault), 0);
+
+        vm.expectRevert("YD: zero amount");
+        distributor.unstake(address(usdtVault), 0);
+
+        vm.expectRevert("YD: nothing staked");
+        distributor.emergencyWithdraw(address(usdtVault));
+        vm.stopPrank();
+    }
+
+    function test_PauseBlocksStakeAndUnstakeButNotClaim() public {
+        uint256 aliceShares = usdtVault.balanceOf(alice);
+        vm.startPrank(alice);
+        IERC20(address(usdtVault)).approve(address(distributor), aliceShares);
+        distributor.stake(address(usdtVault), aliceShares);
+        vm.stopPrank();
+
+        vm.prank(owner);
+        distributor.pause();
+
+        vm.prank(alice);
+        vm.expectRevert();
+        distributor.stake(address(usdtVault), 1);
+
+        vm.prank(alice);
+        vm.expectRevert();
+        distributor.unstake(address(usdtVault), 1);
+
+        vm.prank(alice);
+        (uint256 fees, uint256 bonus) = distributor.claim(address(usdtVault));
+        assertEq(fees, 0);
+        assertEq(bonus, 0);
+    }
+
+    function test_BonusReward_ConfigurationBounds() public {
+        vm.startPrank(owner);
+        vm.expectRevert("YD: zero token");
+        distributor.configureBonusReward(address(0), 1 ether, 100);
+
+        vm.expectRevert("YD: zero amount");
+        distributor.configureBonusReward(address(bonusToken), 0, 100);
+
+        vm.expectRevert("YD: zero duration");
+        distributor.configureBonusReward(address(bonusToken), 1 ether, 0);
+        vm.stopPrank();
+    }
+
+    function test_PendingViewsAndClaimWithoutStakeReturnZero() public {
+        assertEq(distributor.pendingFees(address(usdtVault), bob), 0);
+        assertEq(distributor.pendingBonus(address(usdtVault), bob), 0);
+
+        vm.prank(bob);
+        (uint256 fees, uint256 bonus) = distributor.claim(address(usdtVault));
+        assertEq(fees, 0);
+        assertEq(bonus, 0);
     }
 
     // =====================================================================

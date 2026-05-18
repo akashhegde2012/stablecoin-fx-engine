@@ -15,7 +15,36 @@ import "../src/tokens/USDTToken.sol";
 import "../src/oracles/OracleAggregator.sol";
 import "../src/pools/FXPool.sol";
 import "../src/pools/LPToken.sol";
+import "../src/settlement/NettingLib.sol";
 import "../src/settlement/SettlementEngine.sol";
+
+contract MockYieldDistributor {
+    address public lastVault;
+    uint256 public totalNotified;
+
+    function notifyFees(address vault, uint256 amount) external {
+        lastVault = vault;
+        totalNotified += amount;
+    }
+}
+
+contract NettingHarness {
+    function compute(uint256 totalAIn, uint256 totalBIn, uint256 totalAOut, uint256 totalBOut)
+        external
+        pure
+        returns (NettingLib.FlowResult memory)
+    {
+        return NettingLib.computeNetFlows(totalAIn, totalBIn, totalAOut, totalBOut);
+    }
+
+    function saved(uint256 totalAOut, uint256 totalBOut, NettingLib.FlowResult memory flows)
+        external
+        pure
+        returns (uint256)
+    {
+        return NettingLib.nettingSaved(totalAOut, totalBOut, flows);
+    }
+}
 
 /// @title SettlementEngineTest
 /// @notice Tests for multi-hop routing and intent-based netting.
@@ -69,6 +98,7 @@ contract SettlementEngineTest is Test {
     FXPool idrxPool;
     FXPool usdtPool;
     SettlementEngine engine;
+    NettingHarness netting;
 
     // ── Seed amounts (≈ $226.8k USD value each) ──────────────────────────
     uint256 constant MYR_SEED = 1_000_000 ether;
@@ -113,6 +143,7 @@ contract SettlementEngineTest is Test {
 
         // Settlement engine (inherits FXEngine)
         engine = new SettlementEngine(owner, address(pyth));
+        netting = new NettingHarness();
         engine.registerPool(address(myr), address(myrPool));
         engine.registerPool(address(sgd), address(sgdPool));
         engine.registerPool(address(idrx), address(idrxPool));
@@ -282,7 +313,65 @@ contract SettlementEngineTest is Test {
         vm.stopPrank();
     }
 
-    function test_MultiHopSwap_TwoTokenPathSameAsDirect() public {
+    function test_MultiHopSwap_InputValidationBranches() public {
+        address[] memory path = new address[](3);
+        path[0] = address(sgd);
+        path[1] = address(usdt);
+        path[2] = address(idrx);
+
+        vm.expectRevert("SE: zero amount");
+        engine.swapMultiHop(path, 0, 0, bob);
+
+        vm.expectRevert("SE: zero recipient");
+        engine.swapMultiHop(path, 100 ether, 0, address(0));
+
+        address[] memory tooLong = new address[](6);
+        tooLong[0] = address(myr);
+        tooLong[1] = address(sgd);
+        tooLong[2] = address(usdt);
+        tooLong[3] = address(idrx);
+        tooLong[4] = address(myr);
+        tooLong[5] = address(sgd);
+
+        vm.expectRevert("SE: path too long");
+        engine.swapMultiHop(tooLong, 100 ether, 0, bob);
+    }
+
+    function test_MultiHopQuote_RevertsOnMissingPoolInPath() public {
+        address[] memory path = new address[](2);
+        path[0] = address(sgd);
+        path[1] = makeAddr("missingToken");
+
+        vm.expectRevert("SE: no pool in path");
+        engine.getMultiHopQuote(path, 100 ether);
+    }
+
+    function test_MultiHopSwap_ProtocolFeeBranch() public {
+        MockYieldDistributor distributor = new MockYieldDistributor();
+
+        vm.startPrank(owner);
+        engine.setDistributor(address(distributor));
+        engine.setProtocolFeeRate(1_000);
+        vm.stopPrank();
+
+        address[] memory path = new address[](3);
+        path[0] = address(sgd);
+        path[1] = address(usdt);
+        path[2] = address(idrx);
+
+        uint256 distributorBefore = idrx.balanceOf(address(distributor));
+
+        vm.startPrank(bob);
+        sgd.approve(address(engine), 100 ether);
+        engine.swapMultiHop(path, 100 ether, 0, bob);
+        vm.stopPrank();
+
+        assertEq(distributor.lastVault(), address(idrxPool));
+        assertGt(distributor.totalNotified(), 0);
+        assertEq(idrx.balanceOf(address(distributor)) - distributorBefore, distributor.totalNotified());
+    }
+
+    function test_MultiHopSwap_TwoTokenPathSameAsDirect() public view {
         address[] memory path = new address[](2);
         path[0] = address(myr);
         path[1] = address(sgd);
@@ -329,6 +418,27 @@ contract SettlementEngineTest is Test {
         assertEq(dl, deadline);
         assertFalse(settled);
         assertFalse(cancelled);
+    }
+
+    function test_SubmitIntent_InputValidationBranches() public {
+        vm.expectRevert("SE: zero amount");
+        engine.submitIntent(address(myr), address(sgd), 0, 0, block.timestamp + 1 hours);
+
+        vm.expectRevert("SE: same token");
+        engine.submitIntent(address(myr), address(myr), 1 ether, 0, block.timestamp + 1 hours);
+
+        vm.expectRevert("SE: past deadline");
+        engine.submitIntent(address(myr), address(sgd), 1 ether, 0, block.timestamp);
+
+        uint256 tooFarDeadline = block.timestamp + engine.MAX_INTENT_DURATION() + 1;
+        vm.expectRevert("SE: deadline too far");
+        engine.submitIntent(address(myr), address(sgd), 1 ether, 0, tooFarDeadline);
+
+        vm.expectRevert("SE: no pool for tokenIn");
+        engine.submitIntent(makeAddr("missingIn"), address(sgd), 1 ether, 0, block.timestamp + 1 hours);
+
+        vm.expectRevert("SE: no pool for tokenOut");
+        engine.submitIntent(address(myr), makeAddr("missingOut"), 1 ether, 0, block.timestamp + 1 hours);
     }
 
     function test_CancelIntent() public {
@@ -477,9 +587,6 @@ contract SettlementEngineTest is Test {
 
         // Expected SGD output if Alice swapped directly
         uint256 aliceSGD = engine.getQuote(address(usdt), address(sgd), 5_000 ether);
-        // Expected USDT output if Bob swapped directly
-        uint256 bobUSDT = engine.getQuote(address(sgd), address(usdt), 3_000 ether);
-
         // Settle
         uint256[] memory ids = new uint256[](2);
         ids[0] = id0;
@@ -542,6 +649,34 @@ contract SettlementEngineTest is Test {
 
         assertEq(sgd.balanceOf(bob), sgdBobBefore + bobExpected);
         assertEq(sgd.balanceOf(charlie), sgdCharBefore + charExpected);
+    }
+
+    function test_SettleSameDirection_ReversedPairCoversOppositeNetFlows() public {
+        uint256 deadline = block.timestamp + 1 hours;
+
+        vm.startPrank(bob);
+        sgd.approve(address(engine), 1_000 ether);
+        uint256 id0 = engine.submitIntent(address(sgd), address(usdt), 1_000 ether, 0, deadline);
+        vm.stopPrank();
+
+        vm.startPrank(charlie);
+        sgd.approve(address(engine), 500 ether);
+        uint256 id1 = engine.submitIntent(address(sgd), address(usdt), 500 ether, 0, deadline);
+        vm.stopPrank();
+
+        uint256 usdtBobBefore = usdt.balanceOf(bob);
+        uint256 usdtCharBefore = usdt.balanceOf(charlie);
+
+        uint256[] memory ids = new uint256[](2);
+        ids[0] = id0;
+        ids[1] = id1;
+        engine.settleNetted(ids);
+
+        uint256 bobExpected = engine.getQuote(address(sgd), address(usdt), 1_000 ether);
+        uint256 charExpected = engine.getQuote(address(sgd), address(usdt), 500 ether);
+
+        assertEq(usdt.balanceOf(bob), usdtBobBefore + bobExpected);
+        assertEq(usdt.balanceOf(charlie), usdtCharBefore + charExpected);
     }
 
     // =====================================================================
@@ -635,6 +770,51 @@ contract SettlementEngineTest is Test {
 
         vm.expectRevert("SE: already settled");
         engine.settleNetted(ids);
+    }
+
+    function test_SettleNetted_EmptyAndInactiveBranches() public {
+        uint256[] memory empty = new uint256[](0);
+        vm.expectRevert("SE: empty batch");
+        engine.settleNetted(empty);
+
+        uint256[] memory ids = new uint256[](1);
+        ids[0] = 777;
+        vm.expectRevert("SE: intent does not exist");
+        engine.settleNetted(ids);
+
+        vm.startPrank(bob);
+        usdt.approve(address(engine), 1_000 ether);
+        uint256 intentId = engine.submitIntent(address(usdt), address(sgd), 1_000 ether, 0, block.timestamp + 1 hours);
+        engine.cancelIntent(intentId);
+        vm.stopPrank();
+
+        ids[0] = intentId;
+        vm.expectRevert("SE: already cancelled");
+        engine.settleNetted(ids);
+    }
+
+    function test_NettingLib_AllFlowDirectionsAndSavedBounds() public view {
+        NettingLib.FlowResult memory surplusBoth = netting.compute(100, 90, 40, 30);
+        assertEq(surplusBoth.surplusA, 60);
+        assertEq(surplusBoth.deficitA, 0);
+        assertEq(surplusBoth.surplusB, 60);
+        assertEq(surplusBoth.deficitB, 0);
+        assertEq(netting.saved(40, 30, surplusBoth), 70);
+
+        NettingLib.FlowResult memory deficitBoth = netting.compute(40, 30, 100, 90);
+        assertEq(deficitBoth.surplusA, 0);
+        assertEq(deficitBoth.deficitA, 60);
+        assertEq(deficitBoth.surplusB, 0);
+        assertEq(deficitBoth.deficitB, 60);
+        assertEq(netting.saved(100, 90, deficitBoth), 70);
+
+        NettingLib.FlowResult memory noSavings = NettingLib.FlowResult({
+            surplusA: 0,
+            deficitA: 100,
+            surplusB: 0,
+            deficitB: 100
+        });
+        assertEq(netting.saved(50, 50, noSavings), 0);
     }
 
     // =====================================================================
